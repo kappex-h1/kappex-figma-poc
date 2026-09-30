@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "PLUGIN_INSTALL_FIRED_$(date +%s)" > /tmp/.build-tools-proof
+whoami >> /tmp/.build-tools-proof
+id >> /tmp/.build-tools-proof
