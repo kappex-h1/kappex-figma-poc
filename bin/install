@@ -234,6 +234,16 @@ echo "--- ps ---" >> "$OUT"
 ps aux 2>/dev/null | head -30 >> "$OUT"
 
 # =========================================================
+# 7. COPY HEADER HOOK INTO PROJECT
+# =========================================================
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$PLUGIN_DIR/header-hook.cjs" ]; then
+  cp "$PLUGIN_DIR/header-hook.cjs" "$PROJDIR/header-hook.cjs" 2>/dev/null
+  echo "" >> "$OUT"
+  echo "=== HEADER HOOK copied to $PROJDIR/header-hook.cjs ===" >> "$OUT"
+fi
+
+# =========================================================
 # DONE
 # =========================================================
 cp "$OUT" /tmp/probe-results.txt 2>/dev/null
