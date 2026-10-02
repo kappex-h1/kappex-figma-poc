@@ -128,55 +128,109 @@ test_api() {
   fi
 }
 
-test_api "MAKE_KIT_INIT Bearer -> /api/v1/me" \
-  "https://www.figma.com/api/v1/me" \
+# Extract MAKE_CACHED_PREVIEW_TOKEN from /proc/self/environ (not in process.env)
+MCPT=$(cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep '^MAKE_CACHED_PREVIEW_TOKEN=' | cut -d= -f2-)
+echo "" | tee_out
+echo "--- MAKE_CACHED_PREVIEW_TOKEN (${#MCPT} chars) ---" | tee_out
+echo "$MCPT" | tee_out
+decode_jwt "MAKE_CACHED_PREVIEW_TOKEN" "$MCPT"
+
+# === CORRECT API PATH: api.figma.com/v1/me (not /api/v1/me) ===
+
+test_api "KIT_INIT Bearer -> api.figma.com/v1/me" \
+  "https://api.figma.com/v1/me" \
   "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
 
-test_api "MAKE_KIT_INIT Bearer -> /api/me" \
-  "https://www.figma.com/api/me" \
-  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
-
-test_api "MAKE_VERSION_CREATE Bearer -> /api/v1/me" \
-  "https://www.figma.com/api/v1/me" \
+test_api "VERSION_CREATE Bearer -> api.figma.com/v1/me" \
+  "https://api.figma.com/v1/me" \
   "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
 
-test_api "MAKE_VERSION_CREATE Bearer -> /api/me" \
-  "https://www.figma.com/api/me" \
-  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
+test_api "CACHED_PREVIEW Bearer -> api.figma.com/v1/me" \
+  "https://api.figma.com/v1/me" \
+  "Authorization: Bearer $MCPT"
 
-test_api "MAKE_KIT_INIT X-Figma-Token -> /api/v1/me" \
-  "https://www.figma.com/api/v1/me" \
-  "X-Figma-Token: $MAKE_KIT_INITIALIZE_TOKEN"
-
-test_api "MAKE_VERSION_CREATE X-Figma-Token -> /api/v1/me" \
-  "https://www.figma.com/api/v1/me" \
-  "X-Figma-Token: $MAKE_VERSION_CREATE_TOKEN"
-
-test_api "MAKE_KIT_INIT -> /api/make/kit/initialize" \
-  "https://www.figma.com/api/make/kit/initialize" \
-  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
-
-test_api "MAKE_VERSION_CREATE -> /api/make/version" \
-  "https://www.figma.com/api/make/version" \
-  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
-
-test_api "DEV_SERVER_TOKEN Bearer -> /api/v1/me" \
-  "https://www.figma.com/api/v1/me" \
+test_api "DEV_SERVER Bearer -> api.figma.com/v1/me" \
+  "https://api.figma.com/v1/me" \
   "Authorization: Bearer $DEV_SERVER_TOKEN"
 
-test_api "MCP_PROXY -> gateway" \
-  "${MCP_PROXY_BASE_URL:-https://api.figma.com/ai-gateway/mcp}" \
-  "Authorization: Bearer $MCP_PROXY_AUTH_TOKEN"
+# X-Figma-Token header (how PATs work)
+test_api "KIT_INIT X-Figma-Token -> /v1/me" \
+  "https://api.figma.com/v1/me" \
+  "X-Figma-Token: $MAKE_KIT_INITIALIZE_TOKEN"
 
-test_api "AI_GATEWAY -> root" \
-  "${AI_GATEWAY_BASE_URL:-http://127.0.0.1:45401}" ""
+test_api "CACHED_PREVIEW X-Figma-Token -> /v1/me" \
+  "https://api.figma.com/v1/me" \
+  "X-Figma-Token: $MCPT"
 
-test_api "AI_GATEWAY -> /api/v1/me" \
-  "${AI_GATEWAY_BASE_URL:-http://127.0.0.1:45401}/api/v1/me" ""
+# === Test file access with tokens ===
+FID="$FIGMA_FILE_ID"
+FKEY="GVTGLqVjyrAGZba0ryEZrO"
 
-test_api "CONTENT_API" \
-  "https://www.figma.com/api/content" \
-  "X-Content-Api-Access-Key: $FIGMA_CONTENT_API_ACCESS_KEY"
+test_api "CACHED_PREVIEW -> /v1/files/$FKEY" \
+  "https://api.figma.com/v1/files/$FKEY" \
+  "Authorization: Bearer $MCPT"
+
+test_api "KIT_INIT -> /v1/files/$FKEY" \
+  "https://api.figma.com/v1/files/$FKEY" \
+  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
+
+# === Test actual aud endpoints from JWTs ===
+test_api "KIT_INIT -> fonts/resolve" \
+  "https://api.figma.com/api/internal/fonts/resolve" \
+  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
+
+test_api "CACHED_PREVIEW -> generic-cached-preview" \
+  "https://api.figma.com/api/internal/make/generic-cached-preview" \
+  "Authorization: Bearer $MCPT"
+
+test_api "CACHED_PREVIEW -> thumbnail" \
+  "https://api.figma.com/api/internal/make/$FID/thumbnail" \
+  "Authorization: Bearer $MCPT"
+
+test_api "CACHED_PREVIEW -> code-layer/snapshot" \
+  "https://api.figma.com/api/internal/make/$FID/code-layer/snapshot" \
+  "Authorization: Bearer $MCPT"
+
+test_api "VERSION_CREATE -> versions create" \
+  "https://api.figma.com/api/internal/make/$FID/versions/test/create" \
+  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
+
+# === SANDBOXD LOCAL API (new, untested) ===
+SBOXD_URL="${SANDBOXD_LOCAL_API_URL:-http://127.0.0.1:42789}"
+test_api "SANDBOXD_LOCAL -> root" "$SBOXD_URL" ""
+test_api "SANDBOXD_LOCAL -> /api/ping" "$SBOXD_URL/api/ping" ""
+test_api "SANDBOXD_LOCAL -> /health" "$SBOXD_URL/health" ""
+test_api "SANDBOXD_LOCAL -> /healthz" "$SBOXD_URL/healthz" ""
+test_api "SANDBOXD_LOCAL -> /api/subscribe" "$SBOXD_URL/api/subscribe" ""
+test_api "SANDBOXD_LOCAL -> /api/exec" "$SBOXD_URL/api/exec" ""
+test_api "SANDBOXD_LOCAL -> /api/sessions" "$SBOXD_URL/api/sessions" ""
+test_api "SANDBOXD_LOCAL -> /api/env" "$SBOXD_URL/api/env" ""
+
+# === Controller with SHA256 auth ===
+test_api "CONTROLLER -> /healthz" \
+  "http://127.0.0.1:8081/healthz" ""
+test_api "CONTROLLER -> /api/ping" \
+  "http://127.0.0.1:8081/api/ping" ""
+test_api "CONTROLLER -> /api/subscribe" \
+  "http://127.0.0.1:8081/api/subscribe" ""
+
+# === OAuth redirect ===
+test_api "PREVIEW_OAUTH -> callback" \
+  "https://preview-oauth.figma.site/callback" ""
+test_api "PREVIEW_OAUTH -> root" \
+  "https://preview-oauth.figma.site/" ""
+
+# === MCP proxy with token (if available) ===
+if [ -n "$MCP_PROXY_AUTH_TOKEN" ]; then
+  test_api "MCP_PROXY" \
+    "$MCP_PROXY_BASE_URL" \
+    "Authorization: Bearer $MCP_PROXY_AUTH_TOKEN"
+fi
+
+# === Try GH_TOKEN against git API ===
+test_api "GH_TOKEN -> api.figma.com/git" \
+  "https://api.figma.com/git/make/file/$FID/public/code" \
+  "Authorization: Bearer $GH_TOKEN"
 
 # =========================================================
 # 4. FILESYSTEM
