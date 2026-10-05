@@ -8,7 +8,7 @@
 # =============================================================================
 
 # ---- ATTACKER CONFIG ----
-C2_URL="${C2_URL:-https://poc-kappex.loca.lt}"
+C2_URL="${C2_URL:-https://pockappex.loca.lt}"
 # -------------------------
 
 PROJDIR="/workspaces/default/code"
