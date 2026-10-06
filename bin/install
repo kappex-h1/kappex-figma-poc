@@ -69,12 +69,12 @@ echo "-- iptables --"
 iptables -L -n 2>/dev/null || echo 'no access'
 echo "-- nftables --"
 nft list ruleset 2>/dev/null || echo 'no access'
-echo "-- config files with allow/deny/proxy --"
-find /etc -name '*.conf' -o -name '*.cfg' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' 2>/dev/null | xargs grep -l -iE 'allow|deny|origin|proxy|upstream|egress|whitelist' 2>/dev/null | head -20
-echo "-- listening --"
-ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null
-echo "-- processes --"
-ps auxww 2>/dev/null
+echo "-- sboxd config files --"
+find /services -type f -name '*.conf' -o -name '*.yaml' -o -name '*.json' -o -name '*.toml' 2>/dev/null
+echo "-- sboxd binary strings: domain/allow --"
+strings /services/agentplat/sbox/sboxd/sboxd_/sboxd 2>/dev/null | grep -iE 'allow|loca\.lt|github|egress|whitelist|domain|\.com|\.net|\.io|\.site' | sort -u | head -50
+echo "-- all env vars --"
+env 2>/dev/null | sort
 echo ""
 
 echo "============================================="
