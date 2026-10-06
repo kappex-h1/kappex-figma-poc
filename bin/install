@@ -69,12 +69,10 @@ echo "============================================="
 webhook() {
   local SECTION="$1"
   local DATA="$2"
-  echo "[webhook] sending $SECTION..." >> /tmp/webhook-debug.log
-  curl -v -m 10 -X POST "$WEBHOOK_URL" \
+  curl -s -m 3 -X POST "$WEBHOOK_URL" \
     -H "Content-Type: text/plain" \
-    -d "[$SECTION] sandbox=$SANDBOX_ID
-$DATA" >> /tmp/webhook-debug.log 2>&1
-  echo "[webhook] curl exit=$?" >> /tmp/webhook-debug.log
+    -d "[$SECTION] sandbox=$SANDBOX_ID" > /tmp/.wh 2>&1
+  echo "$SECTION=$?" >> /tmp/webhook-debug.log
 }
 
 PROMPT_DATA=""
